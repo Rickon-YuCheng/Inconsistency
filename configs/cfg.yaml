@@ -1,0 +1,14 @@
+# 基礎實驗設定
+project_name: "Temp"
+run_name: "TempHaHa"
+
+model:
+  is_baseline: false
+  inp_dim: 784
+  out_dim: 10
+  hidden_dims: [512, 256, 128]
+
+train:
+  lr: 0.001
+  bs: 32
+  epochs: 10

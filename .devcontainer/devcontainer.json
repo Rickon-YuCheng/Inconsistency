@@ -1,0 +1,19 @@
+{
+  "name": "NV Container",
+  "image": "nvidia/cuda:12.1.0-devel-ubuntu22.04",
+  "features": {
+    "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {}
+  },
+  "runArgs": [
+    "--gpus=all", "--ipc=host", "--shm-size=2gb"
+  ],
+  "workspaceFolder": "/workspace",
+  "mounts": ["source=${localWorkspaceFolder},target=/workspace,type=bind"],
+  "customizations": {
+    "vscode": {
+      "settings": { "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"},
+      "extensions": [ "ms-python.python", "ms-toolsai.jupyter", "charliermarsh.ruff"]
+    }
+  },
+  "postCreateCommand": "apt-get update && apt-get install -y git curl wget tree && uv sync"
+}

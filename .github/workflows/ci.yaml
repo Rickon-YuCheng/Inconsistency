@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run a one-liner script
+        run: echo "Hello, world!"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true # 自動開啟快取，讓安裝變超快
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run Ruff (Lint)
+        run: uv run ruff check .
+
+      - name: Run Ruff (Format)
+        run: uv run ruff format --check .
+
+      - name: Run Tests
+        run: uv run pytest tests/

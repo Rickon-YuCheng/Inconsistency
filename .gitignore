@@ -1,0 +1,13 @@
+# --- 絕對要 ignore 的快取 ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# --- 虛擬環境與套件管理 ---
+.venv/
+.python-version
+
+# --- 實驗紀錄 ---
+wandb/
+
+datasets/DAICWOZ/
