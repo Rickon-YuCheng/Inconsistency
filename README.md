@@ -10,6 +10,10 @@
 > **🚧 Work In Progress (WIP)**
 > 本專案目前正在開發中，程式碼可能隨時變動。
 
+## Dev log
+0225: 鑒於 test label 無標籤，並仿照 [INTERSPEECH](https://arxiv.org/pdf/2306.01861), [ICASSP](https://arxiv.org/pdf/2204.14099) 這篇僅使用 tr 與 val。[1](https://arxiv.org/pdf/2205.00111)[TextGuided](https://www.sciencedirect.com/science/article/pii/S1566253524006390)這篇有寫DAIC-WOZ的處理方法
+0226: 通常DAICWOZ在論文上是會做些 balance -> overlapping window(a) 之類的動作，但不一致這篇沒提到(TextGuided有具體做法)
+
 ---
 
 ## 📂 Project Structure
