@@ -5,7 +5,6 @@ __pycache__/
 
 # --- 虛擬環境與套件管理 ---
 .venv/
-.python-version
 
 # --- 實驗紀錄 ---
 wandb/

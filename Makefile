@@ -1,5 +1,6 @@
 # 不要管資料夾裡有沒有同名的檔案，只要我下指令，你就給我跑後面的腳本就對了
-.PHONY: train lint format clean test
+# uv add transformers uv remove transformers
+.PHONY: main main-wandb lint format clean test check tree tree2
 
 # 啟動實驗
 train:
@@ -25,6 +26,13 @@ test:
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	rm -rf .pytest_cache
+	rm -rf .ruff_cache
+
+# tree
+tree:
+	uv run tree -L 2
+# tree2:
+	@git ls-tree -r --name-only HEAD | tree --fromfile .
 	rm -rf .ruff_cache
 
 # 環境檢查

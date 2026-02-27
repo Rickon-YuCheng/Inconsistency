@@ -1,5 +1,5 @@
 [project]
-name = "temp" # 建立新專案時再修改
+name = "Inconsistency" # 建立新專案時再修改
 version = "0.1.0"
 description = "A professional deep learning research template with uv and DevContainer."
 readme = "README.md"
@@ -10,6 +10,8 @@ dependencies = [
     "torch==2.4.1+cu121",
     "torchvision==0.19.1+cu121",
     "torchaudio==2.4.1+cu121",
+    "transformers>=5.2.0",
+    "pandas>=2.3.3",
 ]
 
 [[tool.uv.index]]
@@ -28,9 +30,10 @@ dev = [
 
 # 強制使用專業的 src 佈局
 [tool.hatch.build.targets.wheel]
-packages = ["src/temp"]
+packages = ["src/Inconsistency"] # 記得要改
 
 # 代碼格式檢查配置 (Ruff)
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+

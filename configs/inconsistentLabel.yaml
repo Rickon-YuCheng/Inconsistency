@@ -1,0 +1,3 @@
+ds: DAICWOZ
+ds_dir: "/workspace/datasets"
+device: "cuda"
