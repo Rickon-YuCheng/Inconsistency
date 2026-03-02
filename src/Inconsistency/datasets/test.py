@@ -8,6 +8,6 @@ classifier = pipeline(
     device=0
 )
 
-result = classifier("I love using Hugging Face Transformers!")
+result = classifier("yes")
 print(result)
 # Output: [{'label': 'POSITIVE', 'score': 0.9998}]

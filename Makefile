@@ -32,6 +32,7 @@ clean:
 tree:
 	uv run tree -L 2
 # tree2:
+tree2:
 	@git ls-tree -r --name-only HEAD | tree --fromfile .
 	rm -rf .ruff_cache
 

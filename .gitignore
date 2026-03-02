@@ -1,4 +1,4 @@
-# --- 絕對要 ignore 的快取 ---
+# --- 快取 ---
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
@@ -8,5 +8,9 @@ __pycache__/
 
 # --- 實驗紀錄 ---
 wandb/
+
+# --- 圖 ---
+*.jpg
+*.png
 
 datasets/DAICWOZ/
