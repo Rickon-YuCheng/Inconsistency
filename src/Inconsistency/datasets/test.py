@@ -5,7 +5,7 @@ classifier = pipeline(
     model="lxyuan/distilbert-base-multilingual-cased-sentiments-student",
     return_all_scores=True,
     dtype=torch.float16,
-    device=0
+    device=0,
 )
 
 result = classifier("yes")
