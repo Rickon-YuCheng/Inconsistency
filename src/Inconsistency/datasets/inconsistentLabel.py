@@ -7,6 +7,9 @@ import argparse
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
+import torchaudio
+from pathlib import Path
+from speechbrain.inference.interfaces import foreign_class
 
 CFG_PATH = "configs/inconsistentLabel.yaml"
 
@@ -70,18 +73,17 @@ def DISTELBERT(ds: str, ds_dir: str, device: str) -> None:
                 neu += 1
             else:
                 print("Sentence emotion error")
-            # breakpoint()
-            # print(f'into while: {x[j]}')
-        # print(pos,' ',neg.' ',neu)
+
         Dict = {"pos": pos, "neg": neg, "neu": neu}
         key = max(Dict, key=Dict.get)
-        # breakpoint()
+
         print(f"=== patient{i} success -> label: {key}, votes: {Dict}")
+
         totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    return totDict, poslist, neglist, neulist
+    draw(totDict, poslist, neglist, neulist)
 
     # breakpoint()
     # with open(f'{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv')
@@ -105,7 +107,7 @@ class file_p:
 
 def draw(totDict, poslist, neglist, neulist):
     """draw figure"""
-    x = [i for i in range(start, end)]
+    x = [i for i in range(start, end+1)]
     plt.plot(x, poslist, "-", label="pos samples")
     plt.fill_between(x, poslist, alpha=0.8)
     plt.plot(x, neglist, "-", label="neg samples")
@@ -121,13 +123,85 @@ def draw(totDict, poslist, neglist, neulist):
     plt.close()
 
 
+def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
+    '''sb -> Speech brain'''
+    sb_Path=Path(".sb_cache")
+    sb_Path.mkdir(parents=True,exist_ok=True)
+    classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                               pymodule_file="custom_interface.py", 
+                               classname="CustomEncoderWav2vec2Classifier",
+                               savedir=sb_Path,
+                               run_opts={'device':device})
+    totDict = {}
+    poslist, neglist, neulist = [], [], []
+
+    for i in range(start,end+1):
+        p_path=Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
+        pos=neg=neu=0
+        for j in p_path.glob("*.wav"):
+            waveform,sr=torchaudio.load(str(j))
+            with torch.no_grad():
+                _,_,_, text_lab = classifier.classify_batch(waveform.to(device))
+            if text_lab==['hap']:
+                pos+=1
+            elif text_lab in [['sad'],['ang']]:
+                neg+=1
+            elif text_lab==['neu']:
+                neu+=1
+            else:
+                print(f"something error {text_lab}")
+        Dict = {"pos": pos, "neg": neg, "neu": neu}
+        key = max(Dict, key=Dict.get)
+
+        print(f"=== patient{i} success -> label: {key}, votes: {Dict}")
+
+        totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
+        poslist.append(Dict["pos"])
+        neglist.append(Dict["neg"])
+        neulist.append(Dict["neu"])
+    draw(totDict, poslist, neglist, neulist)
+
+def audioPreprosessing(ds: str, ds_dir: str, device: str):
+    for i in range(start, end+1):
+        csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
+        audiofilePath = f"{ds_dir}/{i}_P/{i}_AUDIO.wav"
+
+        if not os.path.exists(audiofilePath):
+            print(f"PATH: {audiofilePath} does not exist")
+            continue
+
+        # csv processing
+        x = pd.read_csv(csvfilePath, sep="\t")
+        x = x[(x["speaker"] == "Participant") & (x["value"].notna())].copy()
+
+        # audio processing
+        _,sr=torchaudio.load(audiofilePath)
+        fpath=Path("/workspace/datasets/DAICWOZ")/f"{i}_P"/f"{i}_aSplits"
+        fpath.mkdir(parents=True,exist_ok=True)
+
+        for row in x.itertuples():
+
+            p=fpath / f"{row.Index+2}_{row.speaker}.wav"
+            if p.exists(): continue
+
+            s_frame=int(row.start_time*sr)
+            n_frame=int((row.stop_time-row.start_time)*sr)
+
+            waveform,_=torchaudio.load(audiofilePath,frame_offset=s_frame,num_frames=n_frame)
+            torchaudio.save(p,waveform,sr)
+
+        print(f"patient{i} finish")
+
+
+
+
 if __name__ == "__main__":
     args = parse_args()
     args.ds_dir = os.path.join(args.ds_dir, args.ds)
-    print(args)
+    # print(args)
     # breakpoint()
-    totDict, poslist, neglist, neulist = DISTELBERT(**vars(args))
+    # DISTELBERT(**vars(args))
     # breakpoint()
-    draw(totDict, poslist, neglist, neulist)
     # draw2(totDict, poslist, neglist, neulist)
-    # WAV2VEC2()
+    # audioPreprosessing(**vars(args))
+    WAV2VEC2(**vars(args))
