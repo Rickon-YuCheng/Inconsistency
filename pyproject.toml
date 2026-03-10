@@ -40,4 +40,7 @@ packages = ["src/Inconsistency"] # 記得要改
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+
+[tool.ruff.lint]
+# 這裡才是放忽略規則的地方
 ignore = ["E701"]

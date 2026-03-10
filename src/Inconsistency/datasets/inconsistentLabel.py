@@ -107,7 +107,7 @@ class file_p:
 
 def draw(totDict, poslist, neglist, neulist):
     """draw figure"""
-    x = [i for i in range(start, end+1)]
+    x = [i for i in range(start, end + 1)]
     plt.plot(x, poslist, "-", label="pos samples")
     plt.fill_between(x, poslist, alpha=0.8)
     plt.plot(x, neglist, "-", label="neg samples")
@@ -124,30 +124,32 @@ def draw(totDict, poslist, neglist, neulist):
 
 
 def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
-    '''sb -> Speech brain'''
-    sb_Path=Path(".sb_cache")
-    sb_Path.mkdir(parents=True,exist_ok=True)
-    classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
-                               pymodule_file="custom_interface.py", 
-                               classname="CustomEncoderWav2vec2Classifier",
-                               savedir=sb_Path,
-                               run_opts={'device':device})
+    """sb -> Speech brain"""
+    sb_Path = Path(".sb_cache")
+    sb_Path.mkdir(parents=True, exist_ok=True)
+    classifier = foreign_class(
+        source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+        pymodule_file="custom_interface.py",
+        classname="CustomEncoderWav2vec2Classifier",
+        savedir=sb_Path,
+        run_opts={"device": device},
+    )
     totDict = {}
     poslist, neglist, neulist = [], [], []
 
-    for i in range(start,end+1):
-        p_path=Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
-        pos=neg=neu=0
+    for i in range(start, end + 1):
+        p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
+        pos = neg = neu = 0
         for j in p_path.glob("*.wav"):
-            waveform,sr=torchaudio.load(str(j))
+            waveform, sr = torchaudio.load(str(j))
             with torch.no_grad():
-                _,_,_, text_lab = classifier.classify_batch(waveform.to(device))
-            if text_lab==['hap']:
-                pos+=1
-            elif text_lab in [['sad'],['ang']]:
-                neg+=1
-            elif text_lab==['neu']:
-                neu+=1
+                _, _, _, text_lab = classifier.classify_batch(waveform.to(device))
+            if text_lab == ["hap"]:
+                pos += 1
+            elif text_lab in [["sad"], ["ang"]]:
+                neg += 1
+            elif text_lab == ["neu"]:
+                neu += 1
             else:
                 print(f"something error {text_lab}")
         Dict = {"pos": pos, "neg": neg, "neu": neu}
@@ -161,8 +163,9 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         neulist.append(Dict["neu"])
     draw(totDict, poslist, neglist, neulist)
 
+
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
-    for i in range(start, end+1):
+    for i in range(start, end + 1):
         csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         audiofilePath = f"{ds_dir}/{i}_P/{i}_AUDIO.wav"
 
@@ -175,24 +178,24 @@ def audioPreprosessing(ds: str, ds_dir: str, device: str):
         x = x[(x["speaker"] == "Participant") & (x["value"].notna())].copy()
 
         # audio processing
-        _,sr=torchaudio.load(audiofilePath)
-        fpath=Path("/workspace/datasets/DAICWOZ")/f"{i}_P"/f"{i}_aSplits"
-        fpath.mkdir(parents=True,exist_ok=True)
+        _, sr = torchaudio.load(audiofilePath)
+        fpath = Path("/workspace/datasets/DAICWOZ") / f"{i}_P" / f"{i}_aSplits"
+        fpath.mkdir(parents=True, exist_ok=True)
 
         for row in x.itertuples():
+            p = fpath / f"{row.Index + 2}_{row.speaker}.wav"
+            if p.exists():
+                continue
 
-            p=fpath / f"{row.Index+2}_{row.speaker}.wav"
-            if p.exists(): continue
+            s_frame = int(row.start_time * sr)
+            n_frame = int((row.stop_time - row.start_time) * sr)
 
-            s_frame=int(row.start_time*sr)
-            n_frame=int((row.stop_time-row.start_time)*sr)
-
-            waveform,_=torchaudio.load(audiofilePath,frame_offset=s_frame,num_frames=n_frame)
-            torchaudio.save(p,waveform,sr)
+            waveform, _ = torchaudio.load(
+                audiofilePath, frame_offset=s_frame, num_frames=n_frame
+            )
+            torchaudio.save(p, waveform, sr)
 
         print(f"patient{i} finish")
-
-
 
 
 if __name__ == "__main__":
