@@ -10,13 +10,17 @@ import matplotlib.pyplot as plt
 import torchaudio
 from pathlib import Path
 from speechbrain.inference.interfaces import foreign_class
+import numpy as np
+
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 CFG_PATH = "configs/inconsistentLabel.yaml"
 
-# start=313
-# end=324
+# start=300
+# end=302
 start = 300
-end = 492
+end = 493 # +1
 
 
 def parse_args():
@@ -33,12 +37,10 @@ def parse_args():
     return args
 
 
-def DISTELBERT(ds: str, ds_dir: str, device: str) -> None:
+def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
+    print("\n**DistilBert**")
     classifier = pipeline(
         model="lxyuan/distilbert-base-multilingual-cased-sentiments-student",
-        return_all_scores=True,
-        dtype=torch.float16,
-        device=0,
     )
     totDict = {}
     poslist, neglist, neulist = [], [], []
@@ -54,17 +56,11 @@ def DISTELBERT(ds: str, ds_dir: str, device: str) -> None:
 
         x = pd.read_csv(f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv", sep="\t")
         x = x[x.speaker == "Participant"]
-        # breakpoint()
         x = x["value"].dropna().tolist()
-        # print(x)
         j = 0
-        # breakpoint()
         pos = neg = neu = 0
-        # breakpoint()
         for j in x:
-            # print(f'cur sentence: {j}')
-            Sentence = classifier(j)
-            # breakpoint()
+            Sentence = classifier(j,batch_size=24)
             if Sentence[0]["label"] == "positive":
                 pos += 1
             elif Sentence[0]["label"] == "negative":
@@ -77,19 +73,14 @@ def DISTELBERT(ds: str, ds_dir: str, device: str) -> None:
         Dict = {"pos": pos, "neg": neg, "neu": neu}
         key = max(Dict, key=Dict.get)
 
-        print(f"=== patient{i} success -> label: {key}, votes: {Dict}")
+        print(f"=== (DB)patient{i} success -> label: {key}, votes: {Dict}")
 
         totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
     draw(totDict, poslist, neglist, neulist)
-
-    # breakpoint()
-    # with open(f'{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv')
-    #     result = classifier("I love using Hugging Face Transformers!")
-    # print(result)
-    # print(f"polarity: {result[0]['label']}")
+    np.savez('DistilBert',a=poslist,b=neglist,c=neulist)
 
 
 class file_p:
@@ -107,7 +98,7 @@ class file_p:
 
 def draw(totDict, poslist, neglist, neulist):
     """draw figure"""
-    x = [i for i in range(start, end + 1)]
+    x = [i for i in range(start, end)]
     plt.plot(x, poslist, "-", label="pos samples")
     plt.fill_between(x, poslist, alpha=0.8)
     plt.plot(x, neglist, "-", label="neg samples")
@@ -125,6 +116,7 @@ def draw(totDict, poslist, neglist, neulist):
 
 def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
     """sb -> Speech brain"""
+    print("\n**WAV2VEC2**")
     sb_Path = Path(".sb_cache")
     sb_Path.mkdir(parents=True, exist_ok=True)
     classifier = foreign_class(
@@ -137,7 +129,7 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
     totDict = {}
     poslist, neglist, neulist = [], [], []
 
-    for i in range(start, end + 1):
+    for i in range(start, end):
         p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
         pos = neg = neu = 0
         for j in p_path.glob("*.wav"):
@@ -155,17 +147,18 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         Dict = {"pos": pos, "neg": neg, "neu": neu}
         key = max(Dict, key=Dict.get)
 
-        print(f"=== patient{i} success -> label: {key}, votes: {Dict}")
+        print(f"=== (WV)patient{i} success -> label: {key}, votes: {Dict}")
 
         totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
     draw(totDict, poslist, neglist, neulist)
-
+    np.savez('Wav2Vec2',a=poslist,b=neglist,c=neulist)
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
-    for i in range(start, end + 1):
+    print("\n**audioPreprocessing**")
+    for i in range(start, end):
         csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         audiofilePath = f"{ds_dir}/{i}_P/{i}_AUDIO.wav"
 
@@ -175,7 +168,7 @@ def audioPreprosessing(ds: str, ds_dir: str, device: str):
 
         # csv processing
         x = pd.read_csv(csvfilePath, sep="\t")
-        x = x[(x["speaker"] == "Participant") & (x["value"].notna())].copy()
+        x = x[x["speaker"] == "Participant"].dropna(subset=["value"]).copy()
 
         # audio processing
         _, sr = torchaudio.load(audiofilePath)
@@ -195,16 +188,14 @@ def audioPreprosessing(ds: str, ds_dir: str, device: str):
             )
             torchaudio.save(p, waveform, sr)
 
-        print(f"patient{i} finish")
+        print(f"(aP)patient{i} finish")
 
 
 if __name__ == "__main__":
     args = parse_args()
     args.ds_dir = os.path.join(args.ds_dir, args.ds)
     # print(args)
-    # breakpoint()
-    # DISTELBERT(**vars(args))
-    # breakpoint()
+    DISTILBERT(**vars(args))
     # draw2(totDict, poslist, neglist, neulist)
-    # audioPreprosessing(**vars(args))
+    audioPreprosessing(**vars(args))
     WAV2VEC2(**vars(args))
