@@ -17,3 +17,4 @@ wav2vec2_checkpoints/
 *.png
 
 datasets/DAICWOZ/
+datasets/Feature

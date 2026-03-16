@@ -17,6 +17,7 @@ dependencies = [
     "requests>=2.28.1",
     "huggingface-hub==0.23.5",
     "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
 ]
 
 [[tool.uv.index]]
