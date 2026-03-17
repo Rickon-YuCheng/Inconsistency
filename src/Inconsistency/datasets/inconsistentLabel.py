@@ -13,6 +13,7 @@ from speechbrain.inference.interfaces import foreign_class
 import numpy as np
 
 import warnings
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 CFG_PATH = "configs/inconsistentLabel.yaml"
@@ -20,7 +21,7 @@ CFG_PATH = "configs/inconsistentLabel.yaml"
 # start=300
 # end=302
 start = 300
-end = 493 # +1
+end = 493  # +1
 
 
 def parse_args():
@@ -60,7 +61,7 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
         j = 0
         pos = neg = neu = 0
         for j in x:
-            Sentence = classifier(j,batch_size=24)
+            Sentence = classifier(j, batch_size=24)
             if Sentence[0]["label"] == "positive":
                 pos += 1
             elif Sentence[0]["label"] == "negative":
@@ -80,7 +81,7 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
     draw(totDict, poslist, neglist, neulist)
-    np.savez('DistilBert',a=poslist,b=neglist,c=neulist)
+    np.savez("DistilBert", a=poslist, b=neglist, c=neulist)
 
 
 class file_p:
@@ -154,7 +155,8 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
     draw(totDict, poslist, neglist, neulist)
-    np.savez('Wav2Vec2',a=poslist,b=neglist,c=neulist)
+    np.savez("Wav2Vec2", a=poslist, b=neglist, c=neulist)
+
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
     print("\n**audioPreprocessing**")
@@ -186,7 +188,7 @@ def audioPreprosessing(ds: str, ds_dir: str, device: str):
             waveform, _ = torchaudio.load(
                 audiofilePath, frame_offset=s_frame, num_frames=n_frame
             )
-            torchaudio.save(p, waveform, sr) # 1024 dim
+            torchaudio.save(p, waveform, sr)  # 1024 dim
 
         print(f"(aP)patient{i} finish")
 

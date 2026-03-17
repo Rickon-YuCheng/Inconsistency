@@ -1,20 +1,31 @@
 import numpy as np
-DB=np.load('DistilBert.npz')
-WV=np.load('Wav2Vec2.npz')
+
+DB = np.load("DistilBert.npz")
+WV = np.load("Wav2Vec2.npz")
 
 # START=300
 # END=302
-START=300
-END=493
-totSplit=j=0
+START = 300
+END = 493
+totSplit = j = 0
 
-for i in range(START,END):
-    totSplit=DB['a'][j]+DB['b'][j]+DB['c'][j] # patient300 totSplit=87
-    t_pos, t_neg, t_neu=round(DB['a'][j]/totSplit, 1), round(DB['b'][j]/totSplit, 1), round(DB['c'][j]/totSplit, 1)
-    a_pos, a_neg, a_neu=round(WV['a'][j]/totSplit, 1), round(WV['b'][j]/totSplit, 1), round(WV['c'][j]/totSplit, 1)
+for i in range(START, END):
+    totSplit = DB["a"][j] + DB["b"][j] + DB["c"][j]  # patient300 totSplit=87
+    t_pos, t_neg, t_neu = (
+        round(DB["a"][j] / totSplit, 1),
+        round(DB["b"][j] / totSplit, 1),
+        round(DB["c"][j] / totSplit, 1),
+    )
+    a_pos, a_neg, a_neu = (
+        round(WV["a"][j] / totSplit, 1),
+        round(WV["b"][j] / totSplit, 1),
+        round(WV["c"][j] / totSplit, 1),
+    )
 
-    print(f"=== patient{i} -> T:A <=> {t_pos:<3.1f} : {t_neg:<3.1f} : {t_neu:<3.1f} = {a_pos:<3.1f} : {a_neg:<3.1f} : {a_neu:<3.1f}")
-    j+=1
+    print(
+        f"=== patient{i} -> T:A <=> {t_pos:<3.1f} : {t_neg:<3.1f} : {t_neu:<3.1f} = {a_pos:<3.1f} : {a_neg:<3.1f} : {a_neu:<3.1f}"
+    )
+    j += 1
 
 # 箱型圖
 # import numpy as np
