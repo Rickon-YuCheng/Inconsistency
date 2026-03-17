@@ -186,7 +186,7 @@ def audioPreprosessing(ds: str, ds_dir: str, device: str):
             waveform, _ = torchaudio.load(
                 audiofilePath, frame_offset=s_frame, num_frames=n_frame
             )
-            torchaudio.save(p, waveform, sr)
+            torchaudio.save(p, waveform, sr) # 1024 dim
 
         print(f"(aP)patient{i} finish")
 
