@@ -1,3 +1,5 @@
+"""percent calculate"""
+
 import numpy as np
 
 DB = np.load("DistilBert.npz")

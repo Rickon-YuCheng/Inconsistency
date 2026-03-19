@@ -18,6 +18,7 @@ dependencies = [
     "huggingface-hub==0.23.5",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
+    "openhownet>=2.0",
 ]
 
 [[tool.uv.index]]

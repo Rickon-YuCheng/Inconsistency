@@ -3,6 +3,15 @@ revision = 3
 requires-python = "==3.10.*"
 
 [[package]]
+name = "anytree"
+version = "2.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/a8/eb55fab589c56f9b6be2b3fd6997aa04bb6f3da93b01154ce6fc8e799db2/anytree-2.13.0.tar.gz", hash = "sha256:c9d3aa6825fdd06af7ebb05b4ef291d2db63e62bb1f9b7d9b71354be9d362714", size = 48389, upload-time = "2025-04-08T21:06:30.662Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7b/98/f6aa7fe0783e42be3093d8ef1b0ecdc22c34c0d69640dfb37f56925cb141/anytree-2.13.0-py3-none-any.whl", hash = "sha256:4cbcf10df36b1f1cba131b7e487ff3edafc9d6e932a3c70071b5b768bab901ff", size = 45077, upload-time = "2025-04-08T21:06:29.494Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2022.12.7"
 source = { registry = "https://download.pytorch.org/whl/cu121" }
@@ -152,6 +161,7 @@ source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "matplotlib" },
+    { name = "openhownet" },
     { name = "pandas" },
     { name = "requests" },
     { name = "scikit-learn" },
@@ -173,6 +183,7 @@ dev = [
 requires-dist = [
     { name = "huggingface-hub", specifier = "==0.23.5" },
     { name = "matplotlib", specifier = ">=3.10.8" },
+    { name = "openhownet", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "requests", specifier = ">=2.28.1" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
@@ -432,6 +443,21 @@ version = "12.1.105"
 source = { registry = "https://download.pytorch.org/whl/cu121" }
 wheels = [
     { url = "https://download.pytorch.org/whl/cu121/nvidia_nvtx_cu12-12.1.105-py3-none-manylinux1_x86_64.whl", hash = "sha256:dc21cf308ca5691e7c04d962e213f8a4aa9bbfa23d95412f452254c2caeb09e5" },
+]
+
+[[package]]
+name = "openhownet"
+version = "2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anytree" },
+    { name = "requests" },
+    { name = "setuptools" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c9/9f/4ecd36e1a8ed505831f89469856f3f5e86f81008a916268802f4fc8a72e8/OpenHowNet-2.0.tar.gz", hash = "sha256:3f9178b17bff8b79bc837dde7d242c213214555b4ec49bb05e9106181b69383e", size = 21630, upload-time = "2021-12-16T17:16:28.775Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/f0/47b0d55b8cf43c801158cd374e6d166b104004ceb14fdeb7d50c9bad9698/OpenHowNet-2.0-py3-none-any.whl", hash = "sha256:2ab89c53e83769d86c4ae3017746774ef6e992661b8d5e2f99cb52b917071dff", size = 18279, upload-time = "2021-12-16T17:16:27.386Z" },
 ]
 
 [[package]]
@@ -756,6 +782,14 @@ wheels = [
 ]
 
 [[package]]
+name = "setuptools"
+version = "70.2.0"
+source = { registry = "https://download.pytorch.org/whl/cu121" }
+wheels = [
+    { url = "https://download.pytorch.org/whl/setuptools-70.2.0-py3-none-any.whl", hash = "sha256:b8b8060bb426838fbe942479c90296ce976249451118ef566a5a0b7d8b78fb05" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -896,8 +930,8 @@ dependencies = [
     { name = "torch" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:b8cc4bf381b75522995b601e07a1b433b5fd925dc3e34a7fa6cd22f449d65379" },
-    { url = "https://download.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:e530c6bbb72f587f0e94740758f005c99e6de871ed9d10afffd8f18bd41e5df0" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:b8cc4bf381b75522995b601e07a1b433b5fd925dc3e34a7fa6cd22f449d65379" },
+    { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:e530c6bbb72f587f0e94740758f005c99e6de871ed9d10afffd8f18bd41e5df0" },
 ]
 
 [[package]]
