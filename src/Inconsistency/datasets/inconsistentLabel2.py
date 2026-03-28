@@ -58,10 +58,10 @@ def INCONSISTENCY():
     Con = Incon = 0
     for i in range(0, len(T)):
         if T[i] == A[i]:
-            result.append(0)  # 一致
+            result.append(1)  # 一致
             Con += 1
         elif T[i] != A[i]:
-            result.append(1)  # 不一致
+            result.append(0)  # 不一致
             Incon += 1
     print(f"result: {result}")
     print(f"一致: {Con} 不一致:{Incon}")
