@@ -16,7 +16,7 @@ def T_HN_zscores():
 
     print(f"平均: {scaler.mean_}")
     print(t_labels)
-    breakpoint()
+    # breakpoint()
     return t_labels
 
 
@@ -32,7 +32,7 @@ def T_zscores():
 
     print(f"平均: {scaler.mean_}")
     print(t_labels)
-    breakpoint()
+    # breakpoint()
     return t_labels
 
 
@@ -46,7 +46,7 @@ def A_zscores():
     print(f"平均: {scaler.mean_}")
     a_labels = np.argmax(X_zscores, axis=1)
     print(a_labels)
-    breakpoint()
+    # breakpoint()
     return a_labels
 
 
@@ -65,6 +65,8 @@ def INCONSISTENCY():
             Incon += 1
     print(f"result: {result}")
     print(f"一致: {Con} 不一致:{Incon}")
+    # breakpoint()
+    np.savez("PseudoLabel", a=result)
 
 
 if __name__ == "__main__":

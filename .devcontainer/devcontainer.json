@@ -1,6 +1,7 @@
 {
   "name": "NV Container",
   "image": "nvidia/cuda:12.1.0-devel-ubuntu22.04",
+  "hostRequirements": {"gpu":"optional"},
   "features": {
     "ghcr.io/jsburckhardt/devcontainer-features/uv:1": {}
   },
