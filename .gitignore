@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.pth
-*.npz
+
 # --- 虛擬環境與套件管理 ---
 .venv/
 
@@ -16,6 +16,7 @@ wav2vec2_checkpoints/
 # --- 圖 ---
 *.jpg
 *.png
+*.npz
 
 datasets/DAICWOZ/
 datasets/Feature
