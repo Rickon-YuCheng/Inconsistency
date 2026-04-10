@@ -1,4 +1,6 @@
 # 0.7501 0.6920 0.7231 0.6843 0.6927 0.6934 0.6868 0.6854 0.6900 0.6948
+# 0.7865 0.7144 0.6822 0.6566 0.6899 0.6802 0.6807 0.6956 0.6875 0.6992
+# 0.7867 0.7101 0.6887
 import torch.nn as nn
 from pathlib import Path
 import os
@@ -9,12 +11,12 @@ from torch.nn.utils.rnn import pad_sequence
 import numpy as np
 from torch.utils.data import Dataset,DataLoader
 from torch.utils.checkpoint import checkpoint
+from torch.utils.data import Subset
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-START=300
-END=493
-# END=302
+TINYTEST=None 
+# TINYTEST=[300,301,302,303,304,305] # 小範圍測試, 要先刪掉stage1Split
 
 D_MODEL=1024
 NHEAD=8
@@ -22,27 +24,24 @@ LR=1e-5
 EPOCHS=10
 
 class ateiDataset(Dataset):
-    def __init__(self, START, END, psuedoLabel):
-        allIdx=list(range(START,END))
-        self.idx=[]
-        a_root=Path("datasets/Feature/HuBERT")
-        t_root=Path("datasets/Feature/RoBerTa")
+    def __init__(self, pseudoMap, TINYTEST=None):
+        self.samples = []
+        self.a_root = Path("datasets/Feature/HuBERT")
+        self.t_root = Path("datasets/Feature/RoBerTa")
 
-        for x in allIdx:
-            a_path=a_root/f"{x}_acoustic.pt"
-            t_path=t_root/f"{x}_text.pt"
-            if a_path.exists() and t_path.exists(): self.idx.append(x)
-        
-        self.psuedoL=psuedoLabel
-        self.a_root=a_root
-        self.t_root=t_root
+        if TINYTEST is None: patientList=sorted(pseudoMap.keys())
+        else: patientList=sorted(TINYTEST)
+
+        for patient in patientList:
+            a_path = self.a_root / f"{patient}_acoustic.pt"
+            t_path = self.t_root / f"{patient}_text.pt"
+            if a_path.exists() and t_path.exists() and patient in pseudoMap:
+                self.samples.append((patient, pseudoMap[patient]))
         
     def __len__(self):
-        return len(self.idx)
+        return len(self.samples)
     def __getitem__(self, index):
-        Patient=self.idx[index]
-        PsuedoL=self.psuedoL[index]
-
+        Patient, PseudoL=self.samples[index]
         a_path = self.a_root / f"{Patient}_acoustic.pt"
         t_path = self.t_root / f"{Patient}_text.pt"
 
@@ -53,7 +52,7 @@ class ateiDataset(Dataset):
         xa_list=[x.squeeze(0) for x in xa] # 這個人的每句話
         xt_list=[x.squeeze(0) for x in xt]
 
-        return xa_list, xt_list, torch.tensor(PsuedoL), Patient#, a_path
+        return xa_list, xt_list, torch.tensor(PseudoL, dtype=torch.long), Patient#, a_path
 
 
 def collate_fn(batch):
@@ -72,82 +71,56 @@ def collate_fn(batch):
 
 def train_stage1():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    PsuedoL=np.load("PseudoLabel.npz")["a"]
+    PseudoLabel=np.load("PseudoLabel.npz")
+    patientIdx=PseudoLabel["patientIdx"]
+    PseudoL=PseudoLabel["label"]
+    PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, PseudoL)}
+    ds=ateiDataset(pseudoMap=PseudoMap, TINYTEST=TINYTEST)
+    
+    # 切 tr 與 test
+    if not os.path.exists("stage1Split.npz"):
+        indices=np.arange(len(ds))
+        if len(indices)>1:
+            rng=np.random.RandomState(42)
+            rng.shuffle(indices)
 
-    ds=ateiDataset(START=START,END=END, psuedoLabel=PsuedoL) #(Pdb) p ds[0][2]->tensor(0) (Pdb) p ds[0][3]->\300
-    dataLoader=DataLoader(ds,batch_size=1,collate_fn=collate_fn,shuffle=True)
+            split=int(len(indices)*0.8)
+            trIdx=indices[:split]
+            testIdx=indices[split:]
+            np.savez("stage1Split", trIdx=trIdx, testIdx=testIdx)
+        else:
+            trIdx=indices
+            testIdx=indices
+    else:
+        splitDS=np.load("stage1Split.npz")
+        trIdx=splitDS["trIdx"]
+    trDS = Subset(ds, trIdx)
+
+    dataLoader=DataLoader(trDS,collate_fn=collate_fn,shuffle=True)
+
     model=atei(D_MODEL,NHEAD).to(device)
     opt=torch.optim.Adam(model.parameters(),lr=LR)
     criterion=nn.CrossEntropyLoss()
-
     scaler = torch.GradScaler('cuda')
     model.train()
     for epoch in range(EPOCHS):
         totLoss=0
-        for key, data in enumerate(dataLoader):
+        for data in dataLoader:
             if data is None: continue
             xa, xt, aMask, tMask, label = [d.to(device) for d in data]
             opt.zero_grad()
             with torch.autocast('cuda'):
-                _,logits=model(xa,xt,aMask,tMask)
-                patient_logit=logits.mean(dim=0,keepdim=True)
-                breakpoint() # watch patient_logit and label
-                loss = criterion(patient_logit, label.unsqueeze(0)) # label 需要擴展一維
-            
+                _,logits=model(xa,xt,aMask,tMask) # logits:　[LenFeat,2] eg: [89,2]
+                patient_logit=logits.mean(dim=0) # torch.Size([2])
+                loss = criterion(patient_logit.unsqueeze(0), label.unsqueeze(0)) # 加batch
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
-
-
             totLoss += loss.item()
-            del xa, xt, aMask, tMask, logits, patient_logit, loss
         print(f"Epoch [{epoch+1}/{EPOCHS}], Avg Loss: {totLoss/len(dataLoader):.4f}")
 
-    # 儲存權重檔
-    torch.save(model.state_dict(), "atei_stage1_weights.pth")
-    print("權重已保存至 atei_stage1_weights.pth")
-
-            
-
-
-
-def main():
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    PsuedoL=np.load("PseudoLabel.npz")
-    PsuedoL=PsuedoL["a"]
-    Atei=atei(D_MODEL,NHEAD).to(device)
-    Atei.eval()
-
-    for i in range(START, END):
-        a_path = Path("datasets/Feature/HuBERT")
-        a_path = a_path / f"{i}_acoustic.pt"
-        t_path = Path("datasets/Feature/RoBerTa")
-        t_path = t_path / f"{i}_text.pt"
-
-        if not os.path.exists(t_path):
-            print(f"PATH: {t_path} does not exist")
-            continue
-
-        # xa type:List(tensor)
-        xa = torch.load(str(a_path))
-        xt = torch.load(str(t_path))
-
-        xa_list=[x.squeeze(0) for x in xa] # 這個人的每句話
-        xt_list=[x.squeeze(0) for x in xt]
-        
-        # xa = [N, seq_len, 1024] -> [N, Max_seq_len, 1024]
-        xa=pad_sequence(xa_list,batch_first=True).to(device) # (Pdb) p xa_padded[0,:,:] eg:這位病人的第0句話的長度進行填充
-        xt=pad_sequence(xt_list,batch_first=True).to(device)
-
-        # aMask = [N, seq_len]
-        aMask=(xa.sum(dim=-1)==0).to(device) # (Pdb) p aMask[0,:] eg:若1024維特徵總和為0，則為Padding(True)
-        tMask=(xt.sum(dim=-1)==0).to(device)
-
-        with torch.no_grad():
-            embdRep, probRep=Atei(xa,xt,aMask,tMask)
-        breakpoint()
-        binLabel=torch.argmax(probRep,dim=-1)
-        breakpoint()
+    torch.save(model.state_dict(), "stage1Weights.pth")
+    print("saved stage1Weights.pth")
 
 
 class atei(nn.Module):
@@ -155,7 +128,7 @@ class atei(nn.Module):
         super(atei,self).__init__()
         assert embd_size % nheads == 0, "Embedding size must be divisible by number of heads"
         enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, nhead=nheads,batch_first=True)
-        self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=4) #12
+        self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=12) #12
 
         self.Cross_Attn=at_cross_attn(embd_size)
 
@@ -205,7 +178,6 @@ class atei(nn.Module):
         avgXta=self.maskMean(Xta,tMask) # Xta: torch.Size([87,23,1024])
         avgXprimeT=self.maskMean(XprimeT, tMask) # XprimeT: torch.Size([87,23,1024])
         hE=torch.cat((avgXprimeA,avgXat,avgXta,avgXprimeT),dim=1)
-        
         # Formula 5. FFN(Z)=ReLU(ZW_1+b_1)W_2+b_2
         Fc1=F.relu(self.fc1(hE))
         Fc2=F.relu(self.fc2(Fc1))

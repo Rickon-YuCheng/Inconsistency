@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.pth
-
+*.npz
 # --- 虛擬環境與套件管理 ---
 .venv/
 

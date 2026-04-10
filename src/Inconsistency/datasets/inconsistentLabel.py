@@ -46,14 +46,12 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
     )
     # totDict = {}
     poslist, neglist, neulist = [], [], []
+    idx=[]
     for i in range(start, end):
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
 
         if not os.path.exists(filePath):
             print(f"PATH: {filePath} does not exist")
-            poslist.append(float("nan"))
-            neglist.append(float("nan"))
-            neulist.append(float("nan"))
             continue
 
         x = pd.read_csv(f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv", sep="\t")
@@ -76,13 +74,13 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
         key = max(Dict, key=Dict.get)
 
         print(f"=== (DB)patient{i} success -> label: {key}, votes: {Dict}")
-
+        idx.append(i)
         # totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(poslist, neglist, neulist)
-    np.savez("DistilBert", a=poslist, b=neglist, c=neulist)
+    draw(idx, poslist, neglist, neulist)
+    np.savez("DistilBert", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
 
 
 # class file_p:
@@ -98,9 +96,10 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
 #         return f"{self.pos}(pos) {self.neg}(neg) {self.neu}(neu)"
 
 
-def draw(poslist, neglist, neulist):
+def draw(idx, poslist, neglist, neulist):
     """draw figure"""
-    x = [i for i in range(start, end)]
+    # x = [i for i in range(start, end)]
+    x=idx
     plt.plot(x, poslist, "-", label="pos samples")
     plt.fill_between(x, poslist, alpha=0.8)
     plt.plot(x, neglist, "-", label="neg samples")
@@ -130,11 +129,16 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
     )
     # totDict = {}
     poslist, neglist, neulist = [], [], []
+    idx=[]
 
     for i in range(start, end):
         p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
+        wavFiles = list(p_path.glob("*.wav"))
+        if len(wavFiles) == 0:
+            print(f"patient{i} no wav splits")
+            continue
         pos = neg = neu = 0
-        for j in p_path.glob("*.wav"):
+        for j in wavFiles:
             waveform, sr = torchaudio.load(str(j))
             with torch.no_grad():
                 _, _, _, text_lab = classifier.classify_batch(waveform.to(device))
@@ -152,11 +156,12 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         print(f"=== (WV)patient{i} success -> label: {key}, votes: {Dict}")
 
         # totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
+        idx.append(i)
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(poslist, neglist, neulist)
-    np.savez("Wav2Vec2", a=poslist, b=neglist, c=neulist)
+    draw(idx, poslist, neglist, neulist)
+    np.savez("Wav2Vec2", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
 
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
@@ -244,17 +249,16 @@ def HOWNET_txt():
 
 
 def HOWNET(ds: str, ds_dir: str, device: str):
+    print("\n**HOWNET**")
     HNdict = HOWNET_txt()
     result_list = []
     poslist, neglist, neulist = [], [], []
+    idx=[]
     for i in range(start, end):
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         pos = neg = neu = 0
         if not os.path.exists(filePath):
             print(f"PATH: {filePath} does not exist")
-            poslist.append(float("nan"))
-            neglist.append(float("nan"))
-            neulist.append(float("nan"))
             continue
 
         x = pd.read_csv(f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv", sep="\t")
@@ -284,13 +288,14 @@ def HOWNET(ds: str, ds_dir: str, device: str):
         key = max(Dict, key=Dict.get)
         print(f"=== (HN)patient{i} success -> label: {key}, votes: {Dict}")
 
+        idx.append(i)
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
         result_list.append(emoLabel)
-    print(result_list)
-    breakpoint()
-    np.savez("HowNet", a=poslist, b=neglist, c=neulist)
+    # print(result_list)
+    # breakpoint()
+    np.savez("HowNet", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx,dtype=np.int64))
 
 
 if __name__ == "__main__":
@@ -298,6 +303,6 @@ if __name__ == "__main__":
     args.ds_dir = os.path.join(args.ds_dir, args.ds)
     # DISTILBERT(**vars(args))
     # audioPreprosessing(**vars(args))
-    # WAV2VEC2(**vars(args))
+    WAV2VEC2(**vars(args))
 
-    HOWNET(**vars(args))
+    # HOWNET(**vars(args))
