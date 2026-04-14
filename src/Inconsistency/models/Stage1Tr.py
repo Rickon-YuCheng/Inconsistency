@@ -1,6 +1,3 @@
-# 0.7501 0.6920 0.7231 0.6843 0.6927 0.6934 0.6868 0.6854 0.6900 0.6948
-# 0.7865 0.7144 0.6822 0.6566 0.6899 0.6802 0.6807 0.6956 0.6875 0.6992
-# 0.7867 0.7101 0.6887
 import torch.nn as nn
 from pathlib import Path
 import os
@@ -13,6 +10,7 @@ from torch.utils.data import Dataset,DataLoader
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import Subset
 import warnings
+import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 TINYTEST=None 
@@ -102,9 +100,12 @@ def train_stage1():
     opt=torch.optim.Adam(model.parameters(),lr=LR)
     criterion=nn.CrossEntropyLoss()
     scaler = torch.GradScaler('cuda')
+    history=[]
+
     model.train()
     for epoch in range(EPOCHS):
         totLoss=0
+
         for data in dataLoader:
             if data is None: continue
             xa, xt, aMask, tMask, label = [d.to(device) for d in data]
@@ -113,14 +114,22 @@ def train_stage1():
                 _,logits=model(xa,xt,aMask,tMask) # logits:　[LenFeat,2] eg: [89,2]
                 patient_logit=logits.mean(dim=0) # torch.Size([2])
                 loss = criterion(patient_logit.unsqueeze(0), label.unsqueeze(0)) # 加batch
+
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
             totLoss += loss.item()
+        history.append(totLoss/len(dataLoader))
         print(f"Epoch [{epoch+1}/{EPOCHS}], Avg Loss: {totLoss/len(dataLoader):.4f}")
 
     torch.save(model.state_dict(), "stage1Weights.pth")
     print("saved stage1Weights.pth")
+    imsave(EPOCHS, history)
+
+def imsave(EPOCHS, history):
+    fig,ax=plt.subplots()
+    ax.plot(range(EPOCHS),history)
+    plt.savefig("lossCE.jpg")
 
 
 class atei(nn.Module):
@@ -128,7 +137,7 @@ class atei(nn.Module):
         super(atei,self).__init__()
         assert embd_size % nheads == 0, "Embedding size must be divisible by number of heads"
         enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, nhead=nheads,batch_first=True)
-        self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=12) #12
+        self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=8) #12
 
         self.Cross_Attn=at_cross_attn(embd_size)
 
@@ -140,13 +149,11 @@ class atei(nn.Module):
 
     def forward(self,xa, xt, aMask=None, tMask=None):
         XprimeA,XprimeT=[],[]
-        
-        # XprimeA=self.transformer_enc(xa, src_key_padding_mask=aMask)
-        # XprimeT=self.transformer_enc(xt, src_key_padding_mask=tMask)
+
         def run_transformer(x, mask):
             return self.transformer_enc(x, src_key_padding_mask=mask)
 
-        chunk_size = 5
+        chunk_size = 5 # split batch [87, 386, 1024]->[5, 386, 1024],[5, 386, 1024]..
 
         # Audio
         xa_chunks = torch.split(xa, chunk_size, dim=0)
@@ -154,13 +161,11 @@ class atei(nn.Module):
         
         XprimeA_list = []
         for x, m in zip(xa_chunks, ma_chunks):
-            # --- 方案 1：Checkpointing (不存中間層) ---
-            # use_reentrant=False 是為了更好的相容性
             chunk_out = checkpoint(run_transformer, x, m, use_reentrant=False)
             XprimeA_list.append(chunk_out)
         XprimeA = torch.cat(XprimeA_list, dim=0)
 
-        # 同理處理文本特徵 (xt)
+        # Text
         xt_chunks = torch.split(xt, chunk_size, dim=0)
         mt_chunks = torch.split(tMask, chunk_size, dim=0)
         
@@ -219,51 +224,35 @@ class at_cross_attn(nn.Module):
         Ka = self.ta_K(XprimeA)
         Va = self.ta_V(XprimeA)
 
-        # aMask = aMask.unsqueeze(1) if aMask is not None else None
-        # tMask = tMask.unsqueeze(1) if tMask is not None else None
-        Xat, at_attn_w=cross_attn(Qa,Kt,Vt,tMask)
-        Xta, ta_attn_w=cross_attn(Qt,Ka,Va,aMask)
+        Xat = cross_attn(Qa,Kt,Vt,tMask)
+        Xta = cross_attn(Qt,Ka,Va,aMask)
 
         return Xat,Xta
 
 
 def cross_attn(Q,K,V,mask=None):
-    Q = Q.unsqueeze(1)
-    K = K.unsqueeze(1)
-    V = V.unsqueeze(1)
+    '''
+    patient300
+    mask: [87, 23]
+    Q: [87, 386, 1024] [N, Lq, E] SDPA require (N,..,Hq,L,E) Hq: Number of heads of Q
+    K: [87, 23, 1024] [N, Lk, E] SDPA require (N,..,H,S,E) H: Number of heads of K&V
+    V: [87, 23, 1024] [N, Lv, E] SDPA require (N,..,H,S,Ev) H: Number of heads of K&V
+        - L: Target sequence length
+        - S: Source sequence length
+        - E: Embedding dim of the q and k
+        - Ev: Embedding dim of the v
+    '''
+    Q = Q.unsqueeze(1) # [87, 1, 386, 1024] add a head dimension
+    K = K.unsqueeze(1) # [87, 1, 23, 1024] 
+    V = V.unsqueeze(1) # [87, 1, 23, 1024]
 
     attn_mask = None
     if mask is not None:
-        # 2. Mask 也要對應變成 4D: [N, 1, 1, Lk]
-        # ~mask 是因為 SDPA 的布林遮罩中 True 代表「可看」，False 代表「遮掉」
-        attn_mask = (~mask).view(mask.size(0), 1, 1, mask.size(1))
-
-    # 3. 執行運算
-    # 此時輸出的 shape 會是 [N, 1, Lq, E]
-    output = F.scaled_dot_product_attention(
-        Q, K, V, 
-        attn_mask=attn_mask,
-        dropout_p=0.0,
-        is_causal=False
-    )
-
-    # 4. 運算完再把 Head 維度壓掉，回到 [N, Lq, E]
-    return output.squeeze(1), None
-    # # Compute the dot products between Q and K, then scale
-    # d_k = Q.size(-1)
-    # scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(d_k, dtype=torch.float32))
+        attn_mask = (~mask).view(mask.size(0), 1, 1, mask.size(1)) # attn_mask: [87, 1, 1, 23] for broadcase
     
-    # # Apply mask if provided
-    # if mask is not None:
-    #     scores = scores.masked_fill(mask, float('-inf'))
-    
-    # # Softmax to normalize scores and get attention weights
-    # attention_weights = F.softmax(scores, dim=-1)
-     
-    # # Weighted sum of values
-    # output = torch.matmul(attention_weights, V)
-    # return output, attention_weights
+    output = F.scaled_dot_product_attention(Q, K, V,attn_mask=attn_mask) # [N, Hq: 1, L, Ev]
 
+    return output.squeeze(1)
 
 if __name__=="__main__":
     train_stage1()

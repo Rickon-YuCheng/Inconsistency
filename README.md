@@ -16,6 +16,10 @@
 
 ---
 
+## Docs descript
+PseudoLabel.npz: "patientIdx, label"
+stage1Split.npz: tr*0.8, test*0.2, rng=42
+
 ## 📂 Project Structure
 
 ```text
@@ -93,3 +97,32 @@ uv run scripts/train.py --config configs/cfg.yaml --bs 64 --lr 0.0005
 
 ## 📝 License
 Distributed under the MIT License. See LICENSE for more information.
+
+
+.
+|--configs
+|  |--cfg.yaml
+|  `--inconsistentLabel.yaml
+|--datasets
+|  |--DAICWOZ
+|  |--Feature
+|  |  |HuBERT
+|  |  `--RoBerTa
+|  `--HowNetDict
+|--src
+|  `--inconsistency
+|     |--datasets
+|     |  |--inconsistentLabel.py
+|     |  `--inconsistentLabel.py
+|     |--models
+|     |  |--FeatureExtraction.py
+|     |  |--Stage1Tr.py
+|     |  `--Stage1Test.py
+|     `--utils
+|--.gitignore
+|--CITATION.cff
+|--LICENSE
+|--Makefile
+|--pyproject.toml
+|--README.md
+`--uv.lock
