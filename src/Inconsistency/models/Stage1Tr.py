@@ -126,11 +126,6 @@ def train_stage1():
     print("saved stage1Weights.pth")
     imsave(EPOCHS, history)
 
-def imsave(EPOCHS, history):
-    fig,ax=plt.subplots()
-    ax.plot(range(EPOCHS),history)
-    plt.savefig("lossCE.jpg")
-
 
 class atei(nn.Module):
     def __init__(self,embd_size,nheads):
