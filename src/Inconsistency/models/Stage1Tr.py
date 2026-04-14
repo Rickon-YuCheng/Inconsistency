@@ -256,4 +256,3 @@ def cross_attn(Q,K,V,mask=None):
 
 if __name__=="__main__":
     train_stage1()
-    # main()
