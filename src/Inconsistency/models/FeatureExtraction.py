@@ -8,6 +8,7 @@ import os
 from transformers import AutoModel, AutoTokenizer
 import pandas as pd
 import warnings
+from Inconsistency.datasets.inconsistentLabel import get_Split_and_GroundTrue
 
 
 
@@ -15,8 +16,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 
-START = 300
-END = 493
+# START = 300
+# END = 493
 # START=300
 # END=302
 
@@ -24,7 +25,8 @@ END = 493
 def loadAudio():
     processor = AutoProcessor.from_pretrained("facebook/hubert-large-ls960-ft")
     model = HubertModel.from_pretrained("facebook/hubert-large-ls960-ft").to("cuda")
-    for i in range(START, END):
+    _,trDS,_=get_Split_and_GroundTrue()
+    for i in trDS:
         s_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
         Personal_list = []
 
@@ -45,7 +47,7 @@ def loadAudio():
                 X = model(input_values, output_hidden_states=True).hidden_states[
                     12
                 ]  # HuBERT 12th
-                breakpoint()
+                # breakpoint()
                 Personal_list.append(X.cpu().detach())
         torch.save(
             Personal_list, f"datasets/Feature/HuBERT/{i}_acoustic.pt"
@@ -56,9 +58,9 @@ def loadAudio():
 def loadText():
     model = AutoModel.from_pretrained("FacebookAI/roberta-large").to("cuda")
     tokenizer=AutoTokenizer.from_pretrained("FacebookAI/roberta-large")
-    
+    _,trDS,_=get_Split_and_GroundTrue()
 
-    for i in range(START, END):
+    for i in trDS:
         t_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_TRANSCRIPT.csv")
         Personal_list=[]
         if not os.path.exists(t_path):
@@ -84,6 +86,9 @@ def loadText():
         print(f"patient{i} successed")
         # breakpoint()
 
+
+
+
 if __name__ == "__main__":
-    # loadAudio()
+    loadAudio()
     loadText()

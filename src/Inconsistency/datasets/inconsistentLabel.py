@@ -12,18 +12,45 @@ from pathlib import Path
 from speechbrain.inference.interfaces import foreign_class
 import numpy as np
 import OpenHowNet
-
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 CFG_PATH = "configs/inconsistentLabel.yaml"
+TRAIN_CSV="datasets/DAICWOZ/train_split_Depression_AVEC2017.csv"
+TEST_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
 
 # start=300
 # end=302
-start = 300
-end = 493  # +1
+# start = 300
+# end = 493  # +1
 
+def get_Split_and_GroundTrue():
+    '''return depMap, train_ids, test_ids
+    PHQ-8: 
+        No depression 0-4
+        Slight depression 5-9
+        Severe depression 10-24
+    '''
+    def score_to_label(score: int) -> int:
+        if 0 <= score <= 4: return 0
+        elif 5 <= score <= 9: return 1
+        elif 10 <= score <= 24: return 2
+        else: raise ValueError(f"Unexpected PHQ8 score: {score}")
+
+    train_df = pd.read_csv(TRAIN_CSV)
+    test_df = pd.read_csv(TEST_CSV)
+    depMap = {} # Dict: tr + test, [id: gt_label]
+
+    for df in [train_df, test_df]:
+        for _, row in df.iterrows():
+            pid = int(row["Participant_ID"])
+            score = int(row["PHQ8_Score"])
+            depMap[pid] = score_to_label(score) # [303: 0, .., 491: 1, 302: 0, .., 492: 0]
+
+    train_ids = train_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
+    test_ids = test_df["Participant_ID"].astype(int).tolist() # len: 35 [302,307,..]
+    return depMap, train_ids, test_ids
 
 def parse_args():
     with open(CFG_PATH, "r") as f:
@@ -41,13 +68,13 @@ def parse_args():
 
 def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
     print("\n**DistilBert**")
-    classifier = pipeline(
-        model="lxyuan/distilbert-base-multilingual-cased-sentiments-student",
-    )
-    # totDict = {}
-    poslist, neglist, neulist = [], [], []
-    idx=[]
-    for i in range(start, end):
+    
+    classifier = pipeline(model="lxyuan/distilbert-base-multilingual-cased-sentiments-student")
+    poslist, neglist, neulist, idx = [], [], [], []
+    _,trDS,_=get_Split_and_GroundTrue()
+
+    # for i in trDS:
+    for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
 
         if not os.path.exists(filePath):
@@ -75,7 +102,6 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
 
         print(f"=== (DB)patient{i} success -> label: {key}, votes: {Dict}")
         idx.append(i)
-        # totDict[str(i)] = file_p(str(i), Dict["pos"], Dict["neg"], Dict["neu"])
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
@@ -83,22 +109,9 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
     np.savez("DistilBert", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
 
 
-# class file_p:
-#     """patient file"""
-
-#     def __init__(self, patient: str, pos, neg, neu):
-#         self.patient = patient
-#         self.pos = pos
-#         self.neg = neg
-#         self.neu = neu
-
-#     def __repr__(self):
-#         return f"{self.pos}(pos) {self.neg}(neg) {self.neu}(neu)"
-
-
 def draw(idx, poslist, neglist, neulist):
     """draw figure"""
-    # x = [i for i in range(start, end)]
+    # x = [i for i in trDS]
     x=idx
     plt.plot(x, poslist, "-", label="pos samples")
     plt.fill_between(x, poslist, alpha=0.8)
@@ -128,10 +141,11 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         run_opts={"device": device},
     )
     # totDict = {}
-    poslist, neglist, neulist = [], [], []
-    idx=[]
+    poslist, neglist, neulist, idx = [], [], [], []
+    _,trDS,_=get_Split_and_GroundTrue()
 
-    for i in range(start, end):
+
+    for i in trDS:
         p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
         wavFiles = list(p_path.glob("*.wav"))
         if len(wavFiles) == 0:
@@ -166,7 +180,9 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
     print("\n**audioPreprocessing**")
-    for i in range(start, end):
+    _,trDS,_=get_Split_and_GroundTrue()
+
+    for i in trDS:
         csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         audiofilePath = f"{ds_dir}/{i}_P/{i}_AUDIO.wav"
 
@@ -204,7 +220,9 @@ def HOWNET_api(ds: str, ds_dir: str, device: str):
     OpenHowNet.download()
     hownet_dict = OpenHowNet.HowNetDict(init_sim=False)
     poslist, neglist, neulist = [], [], []
-    for i in range(start, end):
+    _,trDS,_=get_Split_and_GroundTrue()
+
+    for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
 
         if not os.path.exists(filePath):
@@ -254,7 +272,9 @@ def HOWNET(ds: str, ds_dir: str, device: str):
     result_list = []
     poslist, neglist, neulist = [], [], []
     idx=[]
-    for i in range(start, end):
+    _,trDS,_=get_Split_and_GroundTrue()
+
+    for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         pos = neg = neu = 0
         if not os.path.exists(filePath):
@@ -301,8 +321,8 @@ def HOWNET(ds: str, ds_dir: str, device: str):
 if __name__ == "__main__":
     args = parse_args()
     args.ds_dir = os.path.join(args.ds_dir, args.ds)
-    # DISTILBERT(**vars(args))
-    # audioPreprosessing(**vars(args))
+    DISTILBERT(**vars(args))
+    audioPreprosessing(**vars(args))
     WAV2VEC2(**vars(args))
 
-    # HOWNET(**vars(args))
+    HOWNET(**vars(args))
