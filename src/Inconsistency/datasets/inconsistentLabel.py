@@ -6,6 +6,8 @@ import yaml
 import argparse
 import os
 import pandas as pd
+from sklearn.model_selection import train_test_split
+
 import matplotlib.pyplot as plt
 import torchaudio
 from pathlib import Path
@@ -18,7 +20,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 CFG_PATH = "configs/inconsistentLabel.yaml"
 TRAIN_CSV="datasets/DAICWOZ/train_split_Depression_AVEC2017.csv"
-TEST_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
+VAL_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
 
 # start=300
 # end=302
@@ -26,31 +28,45 @@ TEST_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
 # end = 493  # +1
 
 def get_Split_and_GroundTrue():
-    '''return depMap, train_ids, test_ids
-    PHQ-8: 
-        No depression 0-4
-        Slight depression 5-9
-        Severe depression 10-24
-    '''
+    """ 
+    Split tr/val/test and get label(ground truth). 7:2:1
+
+    ### PHQ8: 
+        **No depression**: 0-4
+        **Slight depression**: 5-9
+        **Severe depression**: 10-24
+    
+    ### Returns:
+        **depMap (dict)**: {patient id, PHQ8 label}
+        **train_idx**: train patient id, total patient(train_idx)=98
+        **val_idx**: val patient id, total patient(val_idx)=29
+        **test_idx** test patient id, total patient(test_idx)=15
+    """
     def score_to_label(score: int) -> int:
         if 0 <= score <= 4: return 0
         elif 5 <= score <= 9: return 1
         elif 10 <= score <= 24: return 2
         else: raise ValueError(f"Unexpected PHQ8 score: {score}")
 
-    train_df = pd.read_csv(TRAIN_CSV)
-    test_df = pd.read_csv(TEST_CSV)
+    tr = pd.read_csv(TRAIN_CSV)
+    val = pd.read_csv(VAL_CSV)
+    df=pd.concat([tr,val], ignore_index=True)
     depMap = {} # Dict: tr + test, [id: gt_label]
 
-    for df in [train_df, test_df]:
-        for _, row in df.iterrows():
-            pid = int(row["Participant_ID"])
-            score = int(row["PHQ8_Score"])
-            depMap[pid] = score_to_label(score) # [303: 0, .., 491: 1, 302: 0, .., 492: 0]
+    for _, row in df.iterrows():
+        pid = int(row["Participant_ID"])
+        score = int(row["PHQ8_Score"])
+        depMap[pid] = score_to_label(score) # [303: 0, .., 491: 1, 302: 0, .., 492: 0]
+    
+    patient_df = df[["Participant_ID", "PHQ8_Score"]]
+    # 7:2:1
+    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=42)
+    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=42)
 
-    train_ids = train_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
-    test_ids = test_df["Participant_ID"].astype(int).tolist() # len: 35 [302,307,..]
-    return depMap, train_ids, test_ids
+    train_idx = tr_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
+    val_idx = val_df["Participant_ID"].astype(int).tolist()
+    test_idx = test_df["Participant_ID"].astype(int).tolist() # len: 35 [302,307,..]
+    return depMap, train_idx, val_idx, test_idx
 
 def parse_args():
     with open(CFG_PATH, "r") as f:
@@ -71,7 +87,7 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
     
     classifier = pipeline(model="lxyuan/distilbert-base-multilingual-cased-sentiments-student")
     poslist, neglist, neulist, idx = [], [], [], []
-    _,trDS,_=get_Split_and_GroundTrue()
+    _,trDS,_,_=get_Split_and_GroundTrue()
 
     # for i in trDS:
     for i in trDS:
@@ -142,8 +158,8 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
     )
     # totDict = {}
     poslist, neglist, neulist, idx = [], [], [], []
-    _,trDS,_=get_Split_and_GroundTrue()
-
+    _,trDS,_,_=get_Split_and_GroundTrue()
+    # tr_val_DS=trDS+valDS
 
     for i in trDS:
         p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
@@ -176,11 +192,11 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         neulist.append(Dict["neu"])
     draw(idx, poslist, neglist, neulist)
     np.savez("Wav2Vec2", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
-
+    breakpoint()
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str):
     print("\n**audioPreprocessing**")
-    _,trDS,_=get_Split_and_GroundTrue()
+    _,trDS,_,_=get_Split_and_GroundTrue()
 
     for i in trDS:
         csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
@@ -220,7 +236,7 @@ def HOWNET_api(ds: str, ds_dir: str, device: str):
     OpenHowNet.download()
     hownet_dict = OpenHowNet.HowNetDict(init_sim=False)
     poslist, neglist, neulist = [], [], []
-    _,trDS,_=get_Split_and_GroundTrue()
+    _,trDS,_,_=get_Split_and_GroundTrue()
 
     for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
@@ -272,7 +288,7 @@ def HOWNET(ds: str, ds_dir: str, device: str):
     result_list = []
     poslist, neglist, neulist = [], [], []
     idx=[]
-    _,trDS,_=get_Split_and_GroundTrue()
+    _,trDS,_,_=get_Split_and_GroundTrue()
 
     for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"

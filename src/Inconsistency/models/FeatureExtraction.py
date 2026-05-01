@@ -1,3 +1,4 @@
+""" SSL-based Feature Extraction """
 # HuBERT: https://huggingface.co/docs/transformers/model_doc/hubert#transformers.HubertModel
 # RoBERTA:
 import torchaudio
@@ -25,70 +26,71 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 def loadAudio():
     processor = AutoProcessor.from_pretrained("facebook/hubert-large-ls960-ft")
     model = HubertModel.from_pretrained("facebook/hubert-large-ls960-ft").to("cuda")
-    _,trDS,_=get_Split_and_GroundTrue()
-    for i in trDS:
-        s_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
-        Personal_list = []
+    _,trDS,valDS,testDS=get_Split_and_GroundTrue()
+    for dataset in [trDS,valDS,testDS]:
+        for i in dataset:
+            s_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
+            Personal_list = []
 
-        if not os.path.exists(s_path):
-            print(f"PATH: {s_path} does not exist")
-            continue
+            if not os.path.exists(s_path):
+                print(f"PATH: {s_path} does not exist")
+                continue
 
-        for j in s_path.glob("*.wav"):
-            waveframe, sr = torchaudio.load(str(j))
+            for j in s_path.glob("*.wav"):
+                waveframe, sr = torchaudio.load(str(j))
 
-            # preprocessing for HuBERT
-            input_values = processor(
-                waveframe.squeeze(), sampling_rate=sr, return_tensors="pt"
-            ).input_values.to("cuda")  # Batch size 1
+                # preprocessing for HuBERT
+                input_values = processor(
+                    waveframe.squeeze(), sampling_rate=sr, return_tensors="pt"
+                ).input_values.to("cuda")  # Batch size 1
 
-            # run HuBERT
-            with torch.no_grad():
-                X = model(input_values, output_hidden_states=True).hidden_states[
-                    12
-                ]  # HuBERT 12th
-                # breakpoint()
-                Personal_list.append(X.cpu().detach())
-        torch.save(
-            Personal_list, f"datasets/Feature/HuBERT/{i}_acoustic.pt"
-        )  # tot 17.9GB
-        print(f"patient{i} successed")
+                # run HuBERT
+                with torch.no_grad():
+                    X = model(input_values, output_hidden_states=True).hidden_states[
+                        12
+                    ]  # HuBERT 12th
+                    # breakpoint()
+                    Personal_list.append(X.cpu().detach())
+            torch.save(
+                Personal_list, f"datasets/Feature/HuBERT/{i}_acoustic.pt"
+            )  # tot 17.9GB
+            print(f"patient{i} successed")
 
 
 def loadText():
     model = AutoModel.from_pretrained("FacebookAI/roberta-large").to("cuda")
     tokenizer=AutoTokenizer.from_pretrained("FacebookAI/roberta-large")
-    _,trDS,_=get_Split_and_GroundTrue()
+    _,trDS,valDS,testDS=get_Split_and_GroundTrue()
+    for dataset in [trDS,valDS,testDS]:
+        for i in dataset:
+            t_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_TRANSCRIPT.csv")
+            Personal_list=[]
+            if not os.path.exists(t_path):
+                print(f"PATH: {t_path} does not exist")
+                continue
 
-    for i in trDS:
-        t_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_TRANSCRIPT.csv")
-        Personal_list=[]
-        if not os.path.exists(t_path):
-            print(f"PATH: {t_path} does not exist")
-            continue
 
-
-        x = pd.read_csv(t_path, sep="\t")
-        x = x[x.speaker == "Participant"]
-        x = x["value"].dropna().tolist()
-        j = 0
-        for j in x:
-            inputs = tokenizer(j, return_tensors="pt").to("cuda")
-            model.eval()
-            with torch.no_grad():
-                outputs=model(**inputs)
-                Personal_list.append(outputs.last_hidden_state)
-        
-        # print(f"(Test) Patient{i} csvLen: {len(Personal_list)} x[0]: {x[0]}, x[-1]: {x[-1]}")
-        torch.save(
-            Personal_list, f"datasets/Feature/RoBerTa/{i}_text.pt" # Xa = tot patient
-        )  # tot 1.2 GB
-        print(f"patient{i} successed")
-        # breakpoint()
+            x = pd.read_csv(t_path, sep="\t")
+            x = x[x.speaker == "Participant"]
+            x = x["value"].dropna().tolist()
+            j = 0
+            for j in x:
+                inputs = tokenizer(j, return_tensors="pt").to("cuda")
+                model.eval()
+                with torch.no_grad():
+                    outputs=model(**inputs)
+                    Personal_list.append(outputs.last_hidden_state)
+            
+            # print(f"(Test) Patient{i} csvLen: {len(Personal_list)} x[0]: {x[0]}, x[-1]: {x[-1]}")
+            torch.save(
+                Personal_list, f"datasets/Feature/RoBerTa/{i}_text.pt" # Xa = tot patient
+            )  # tot 1.2 GB
+            print(f"patient{i} successed")
+            # breakpoint()
 
 
 
 
 if __name__ == "__main__":
-    loadAudio()
+    # loadAudio()
     loadText()

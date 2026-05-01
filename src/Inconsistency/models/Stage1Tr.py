@@ -13,9 +13,6 @@ import warnings
 import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-TINYTEST=None 
-# TINYTEST=[300,301,302,303,304,305] # 小範圍測試, 要先刪掉stage1Split
-
 D_MODEL=128
 NHEAD=8
 LR=1e-5
@@ -24,45 +21,47 @@ TRANSFORMER_ENC_LAYERS=2
 CHUNK_SIZE=1
 # RANDOM_SEED=42
 
-class ateiDataset(Dataset):
-    def __init__(self, pseudoMap, depMap=None, TINYTEST=None):
-        self.samples = []
-        self.pseudoMap=pseudoMap
-        self.depMap = depMap
-        # self.dep_label,_,_=get_Split_and_GroundTrue()
-        self.a_root = Path("datasets/Feature/HuBERT")
-        self.t_root = Path("datasets/Feature/RoBerTa")
+class daicwoz_dataset(Dataset):
+    '''
+    fold = "val" -> 給 Stage2Main 用的
+    '''
+    def __init__(self, fold: str="tr"):
+        self.ds=[]
+        a_root = Path("datasets/Feature/HuBERT")
+        t_root = Path("datasets/Feature/RoBerTa")
+        if fold=='tr':
+            depMap, patient_Idx,_,_=get_Split_and_GroundTrue()
+            PseudoLabel=np.load("PseudoLabel.npz")
+            patientIdx, atei_label = PseudoLabel["patientIdx"], PseudoLabel["label"]
+            PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, atei_label)}
+        elif fold =='val':
+            depMap, _, patient_Idx, _=get_Split_and_GroundTrue()     
+        elif fold =='test':
+            depMap, _, _, patient_Idx=get_Split_and_GroundTrue()           
+        else: raise Exception('fold error')
 
-        if TINYTEST is None: patientList=sorted(pseudoMap.keys())
-        else: patientList=sorted(TINYTEST)
 
-        for patient in patientList:
-            a_path = self.a_root / f"{patient}_acoustic.pt"
-            t_path = self.t_root / f"{patient}_text.pt"
-
-            if patient not in pseudoMap: continue
-            if depMap is not None and patient not in depMap: continue
-            if not a_path.exists() or not t_path.exists(): continue
-            pseudo_label = int(pseudoMap[patient])
-            if depMap is None: dep_label=pseudo_label
-            else: dep_label=int(depMap[patient])
-            self.samples.append((patient,pseudo_label,dep_label,a_path,t_path))
+        for p in patient_Idx:
             
-            # if a_path.exists() and t_path.exists() and patient in pseudoMap:
-            #     self.samples.append((patient, pseudoMap[patient]))
-        # breakpoint()
+            a_path=a_root / f"{p}_acoustic.pt"
+            t_path=t_root / f"{p}_text.pt"
+
+            assert a_path.exists() and t_path.exists(), "ds error"
+
+            dep_label=depMap[p]
+            
+            if fold=='tr': atei_label=PseudoMap[p]
+            elif fold=='val': atei_label=1 # val's atei all 1, this mean don't care atei_label
+            elif fold == 'test': atei_label = 1
+            
+            self.ds.append((p, atei_label, dep_label, a_path, t_path))
         
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.ds)
     def __getitem__(self, index):
-        Patient, PseudoL, DepL, a_path, t_path=self.samples[index]
-        # dep_label = torch.tensor(int(self.dep_label[Patient]), dtype=torch.long)
-
-        # a_path = self.a_root / f"{Patient}_acoustic.pt"
-        # t_path = self.t_root / f"{Patient}_text.pt"
-
-        # xa type:List(tensor)
+        Patient, PseudoL, DepL, a_path, t_path=self.ds[index]
+        
         xa = torch.load(str(a_path))
         xt = torch.load(str(t_path))
 
@@ -79,7 +78,7 @@ def collate_fn(batch):
     batch = [item for item in batch if item is not None]
     
     xa_list,xt_list,pseudoL,dep_label,Patient=batch[0]
-    print(f"==patient{Patient}")
+    # print(f"==patient{Patient}")
     xa=pad_sequence(xa_list,batch_first=True) # (Pdb) p xa_padded[0,:,:] eg:這位病人的第0句話的長度進行填充
     xt=pad_sequence(xt_list,batch_first=True)
 
@@ -87,35 +86,17 @@ def collate_fn(batch):
     aMask=(xa.sum(dim=-1)==0) # (Pdb) p aMask[0,:] eg:若1024維特徵總和為0，則為Padding(True)
     tMask=(xt.sum(dim=-1)==0)
 
-    return xa,xt,aMask,tMask,pseudoL,dep_label
+    return xa,xt,aMask,tMask,pseudoL,dep_label,Patient
 
-# def get_split(ds):
-#     # 切 tr 與 test
-#     if not os.path.exists("stage1Split.npz"):
-#         indices=np.arange(len(ds))
-#         if len(indices)>1:
-#             # rng=np.random.RandomState(RANDOM_SEED)
-#             # rng.shuffle(indices)
-
-#             split=int(len(indices)*0.8) # train_test_split
-#             trIdx, testIdx = indices[:split], indices[split:]
-#             np.savez("stage1Split", trIdx=trIdx, testIdx=testIdx)
-#         else:
-#             trIdx=indices
-#             testIdx=indices
-#     else:
-#         splitDS=np.load("stage1Split.npz")
-#         trIdx=splitDS["trIdx"]
-#     return Subset(ds, trIdx)
 
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    PseudoLabel=np.load("PseudoLabel.npz")
-    patientIdx, PseudoL = PseudoLabel["patientIdx"], PseudoLabel["label"]
-    PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, PseudoL)}
+    # PseudoLabel=np.load("PseudoLabel.npz")
+    # patientIdx, PseudoL = PseudoLabel["patientIdx"], PseudoLabel["label"]
+    # PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, PseudoL)}
 
     # pseudoMap is built from the training split, so no additional split is needed here.
-    ds=ateiDataset(pseudoMap=PseudoMap, TINYTEST=TINYTEST) 
+    ds=daicwoz_dataset(fold="tr") 
     dataLoader=DataLoader(ds,collate_fn=collate_fn)#,shuffle=True)
 
     model=atei(D_MODEL,NHEAD).to(device)
