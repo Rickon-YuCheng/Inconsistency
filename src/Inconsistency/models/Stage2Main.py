@@ -43,7 +43,7 @@ class whole_model(nn.Module):
         self.alpha = nn.Parameter(torch.ones(embd_size))
         self.oup=nn.Linear(embd_size,3)
         
-    def forward(self, XA, XT, aMask=None, tMask=None):
+    def forward(self, XA, XT, aMask=None, tMask=None, return_feature=False):
         XA_raw = XA
         XT_raw = XT
 
@@ -80,6 +80,8 @@ class whole_model(nn.Module):
         Fc2=self.dropout(F.relu(self.fc2(Fc1)))
         Fc3=self.dropout(F.relu(self.fc3(Fc2)))
         Oup=self.oup(Fc3)
+
+        if return_feature: return atei_logit, Oup, Fc3
 
         return atei_logit, Oup
     
@@ -119,7 +121,7 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
                     
             L_Atei = loss_atei(patient_atei.unsqueeze(0), atei_label.unsqueeze(0)) # 加batch
             L_Depression = loss_dep(patient_dep.unsqueeze(0), dep_label.unsqueeze(0)) # 加batch
-            L_Total=0.2*L_Atei+L_Depression
+            L_Total=L_Atei+L_Depression
             # ===
                 
         scaler.scale(L_Total).backward()
@@ -168,7 +170,7 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
     valid_batches = 0
 
     true_arr = []
-    pred_mean_arr = []
+    pred_arr = []
 
     pbar = tqdm(val_loader,desc=f"Validation epoch {cur_epoch}/{tot_epochs}",leave=False,unit="batch",)
 
@@ -193,11 +195,11 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
 
 
             # prediction 1: mean logits
-            dep_pred_mean = patient_dep.argmax(dim=-1)
+            dep_pred = patient_dep.argmax(dim=-1)
 
 
             true_arr.append(int(dep_label.item()))
-            pred_mean_arr.append(int(dep_pred_mean.item()))
+            pred_arr.append(int(dep_pred.item()))
 
             totDepLoss += L_Depression.item()
             valid_batches += 1
@@ -206,22 +208,22 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
             pbar.set_postfix({
                 "dep_loss": totDepLoss / valid_batches,
             })
-    mean_metrics = get_metrics(true_arr, pred_mean_arr)
+    metrics = get_metrics(true_arr, pred_arr)
 
     from collections import Counter
     print("Val true dist:", Counter(true_arr))
-    print("Val mean pred dist:", Counter(pred_mean_arr))
+    print("Val  pred dist:", Counter(pred_arr))
 
     return {
         "dep_loss": totDepLoss / max(valid_batches, 1),
 
-        "mean_acc": mean_metrics["acc"],
-        "mean_pre": mean_metrics["pre"],
-        "mean_rec": mean_metrics["rec"],
-        "mean_f1": mean_metrics["f1"],
+        "acc": metrics["acc"],
+        "pre": metrics["pre"],
+        "rec": metrics["rec"],
+        "f1": metrics["f1"],
 
         "labels": true_arr,
-        "preds": pred_mean_arr,
+        "preds": pred_arr,
     }
 
 def main():
@@ -229,6 +231,7 @@ def main():
     wandb.init(
         project="Emotion inconsistency",
         name=f"D{D_MODEL}_H{NHEAD}_LR{LR}_E{EPOCHS}",
+        notes="""""",
         config={
             "D_MODEL": D_MODEL,
             "NHEAD": NHEAD,
@@ -237,9 +240,10 @@ def main():
             "TRANSFORMER_ENC_LAYERS": TRANSFORMER_ENC_LAYERS,
             "dropout": 0.3,
             "weight_decay": 1e-4,
-            "loss_total": "L_Depression only",
+            "loss_total": "L_Atei + L_Depression",
             "class_weights": [1.0, 1.3, 1.3],
-        }
+        },
+        save_code=True
     )
 
     # 1. Dataset
@@ -301,36 +305,52 @@ def main():
         )
 
         print(
-            f"[Val-Mean] "
+            f"[Val] "
             f"Dep Loss: {val_result['dep_loss']:.4f} | "
-            f"Acc: {val_result['mean_acc']:.4f} | "
-            f"Pre: {val_result['mean_pre']:.4f} | "
-            f"Rec: {val_result['mean_rec']:.4f} | "
-            f"F1: {val_result['mean_f1']:.4f}"
+            f"Acc: {val_result['acc']:.4f} | "
+            f"Pre: {val_result['pre']:.4f} | "
+            f"Rec: {val_result['rec']:.4f} | "
+            f"F1: {val_result['f1']:.4f}"
         )
 
         wandb.log({
-            "train/atei_loss": tr_result["atei_loss"],
-            "train/dep_loss": tr_result["dep_loss"],
-            "train/tot_loss": tr_result["tot_loss"],
+            # scalar metrics
+            "loss/dep_train": tr_result["dep_loss"],
+            "loss/dep_val": val_result["dep_loss"],
+            "loss/atei_train": tr_result["atei_loss"],
+            "loss/total_train": tr_result["tot_loss"],
+
             "train/atei_acc": tr_result["cur_atei_acc"],
             "train/dep_acc": tr_result["cur_dep_acc"],
 
-            "val/dep_loss": val_result["dep_loss"],
-
-            "val_mean/acc": val_result["mean_acc"],
-            "val_mean/pre": val_result["mean_pre"],
-            "val_mean/rec": val_result["mean_rec"],
-            "val_mean/f1": val_result["mean_f1"],
+            "val/acc": val_result["acc"],
+            "val/precision": val_result["pre"],
+            "val/recall": val_result["rec"],
+            "val/f1": val_result["f1"],
 
             "lr": opt.param_groups[0]["lr"],
-        },step=epoch)
+        }, step=epoch)
 
-        if val_result["mean_f1"] > best_val_f1:
-            best_val_f1 = val_result["mean_f1"]
+        epochs = list(range(1, epoch + 1))
+
+        wandb.log({
+            "charts/overfitting_dep_loss": wandb.plot.line_series(
+                xs=epochs,
+                ys=[
+                    [x["dep_loss"] for x in tr_history],
+                    [x["dep_loss"] for x in val_history],
+                ],
+                keys=["train_dep_loss", "val_dep_loss"],
+                title="Overfitting Check: Depression Loss",
+                xname="epoch",
+            )
+        }, step=epoch)
+
+        if val_result["f1"] > best_val_f1:
+            best_val_f1 = val_result["f1"]
             torch.save(model.state_dict(), "stage2BestWeights.pth")
-            wandb.run.summary["best_val_mean_f1"] = best_val_f1
-            print(f"[Save Best] Val Mean F1: {best_val_f1:.4f}")
+            wandb.run.summary["best_val_f1"] = best_val_f1
+            print(f"[Save Best] Val F1: {best_val_f1:.4f}")
 
     wandb.finish()
 

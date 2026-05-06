@@ -6,6 +6,9 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import warnings
 import csv
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
 from Stage1Tr import daicwoz_dataset, collate_fn
 from Stage2Main import whole_model, D_MODEL, NHEAD
@@ -28,6 +31,7 @@ def test(model, test_loader, loss_dep, device):
     pred_mean_arr = []
     pred_vote_arr = []
     prob_arr = []
+    feature_arr = []
 
 
     pbar = tqdm(
@@ -53,9 +57,11 @@ def test(model, test_loader, loss_dep, device):
                 device_type="cuda",
                 enabled=(device == "cuda"),
             ):
-                _, dep_logits = model(xa, xt, aMask, tMask)
+                _, dep_logits, feature = model(xa, xt, aMask, tMask, return_feature=True)
 
                 patient_dep = dep_logits.mean(dim=0)
+
+                feature_arr.append(feature.detach().cpu().float().view(-1).numpy())
 
                 L_Depression = loss_dep(
                     patient_dep.unsqueeze(0),
@@ -106,6 +112,8 @@ def test(model, test_loader, loss_dep, device):
         "pred_mean": np.array(pred_mean_arr),
         "pred_vote": np.array(pred_vote_arr),
         "prob": np.array(prob_arr),
+
+        "feature": np.array(feature_arr),
     }
 
 def get_metrics(y_true, y_pred):
@@ -125,6 +133,57 @@ def majority_vote(dep_logits):
 
     return torch.mode(seg_pred).values
 
+def plot_tsne(features, labels):
+    features = np.asarray(features)
+    labels = np.asarray(labels)
+
+    if len(features) < 5:
+        print("[t-SNE] samples too few, skip.")
+        return
+
+    perplexity = min(30, max(2, len(features) // 3))
+
+    z = TSNE(
+        n_components=2,
+        perplexity=perplexity,
+        learning_rate="auto",
+        init="pca",
+        random_state=42,
+    ).fit_transform(features)
+
+    names = {
+        0: "Healthy",
+        1: "Mild",
+        2: "Moderate",
+    }
+
+    markers = {
+        0: "o",
+        1: "^",
+        2: "s",
+    }
+
+    plt.figure(figsize=(6, 5))
+
+    for cls in [0, 1, 2]:
+        idx = labels == cls
+        plt.scatter(
+            z[idx, 0],
+            z[idx, 1],
+            marker=markers[cls],
+            label=names[cls],
+            alpha=0.85,
+            s=35,
+        )
+
+    plt.legend()
+    plt.title("t-SNE of Final Hidden Feature")
+    plt.xticks([])
+    plt.yticks([])
+    plt.tight_layout()
+    plt.savefig("tsne_test.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -142,6 +201,7 @@ def main():
     print(f"Test samples: {len(testDS)}")
     print(f"Weight path : {WEIGHT_PATH}")
     print("=" * 80)
+    
 
     model = whole_model(D_MODEL, NHEAD).to(device)
 
@@ -161,6 +221,26 @@ def main():
         device=device,
     )
 
+    report_text = classification_report(
+        result["true"],
+        result["pred_mean"],
+        labels=[0, 1, 2],
+        target_names=["class_0", "class_1", "class_2"],
+        zero_division=0,
+    )
+
+    cm = confusion_matrix(
+        result["true"],
+        result["pred_mean"],
+        labels=[0, 1, 2]
+    )
+
+    print("\n[Classification Report]")
+    print(report_text)
+
+    print("\n[Confusion Matrix]")
+    print(cm)
+
     print("=" * 80)
     print(f"Test Dep Loss: {result['dep_loss']:.4f}")
 
@@ -179,6 +259,10 @@ def main():
         f"Rec: {result['vote_rec']:.4f} | "
         f"F1: {result['vote_f1']:.4f}"
     )
+
+    print("=" * 80)
+
+    plot_tsne(result["feature"], result["true"])
 
     print("=" * 80)
 
