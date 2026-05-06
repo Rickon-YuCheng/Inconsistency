@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import warnings
@@ -20,13 +21,14 @@ def test(model, test_loader, loss_dep, device):
     model.eval()
 
     totDepLoss = 0.0
-    correct_dep = 0
     valid_batches = 0
 
     patient_arr = []
     true_arr = []
-    pred_arr = []
+    pred_mean_arr = []
+    pred_vote_arr = []
     prob_arr = []
+
 
     pbar = tqdm(
         test_loader,
@@ -61,35 +63,67 @@ def test(model, test_loader, loss_dep, device):
                 )
 
             dep_prob = torch.softmax(patient_dep, dim=-1)
-            dep_pred = patient_dep.argmax(dim=-1)
+
+            dep_pred_mean = patient_dep.argmax(dim=-1)
+            dep_pred_vote = majority_vote(dep_logits)
 
             totDepLoss += L_Depression.item()
-            correct_dep += int(dep_pred.item() == dep_label.item())
             valid_batches += 1
 
-            # 如果你的 collate_fn 沒有回傳 patient，這裡先用 batch index 代替
             patient_arr.append(int(Patient))
             true_arr.append(int(dep_label.item()))
-            pred_arr.append(int(dep_pred.item()))
+            pred_mean_arr.append(int(dep_pred_mean.item()))
+            pred_vote_arr.append(int(dep_pred_vote.item()))
             prob_arr.append(dep_prob.detach().cpu().numpy())
+
+            cur_metrics = get_metrics(true_arr, pred_vote_arr)
 
             pbar.set_postfix({
                 "dep_loss": totDepLoss / valid_batches,
-                "dep_acc": correct_dep / valid_batches,
+                "vote_acc": cur_metrics["acc"],
+                "vote_f1": cur_metrics["f1"],
             })
 
     avg_dep_loss = totDepLoss / max(valid_batches, 1)
-    dep_acc = correct_dep / max(valid_batches, 1)
+    mean_metrics = get_metrics(true_arr, pred_mean_arr)
+    vote_metrics = get_metrics(true_arr, pred_vote_arr)
 
     return {
         "dep_loss": avg_dep_loss,
-        "dep_acc": dep_acc,
+
+        "mean_acc": mean_metrics["acc"],
+        "mean_pre": mean_metrics["pre"],
+        "mean_rec": mean_metrics["rec"],
+        "mean_f1": mean_metrics["f1"],
+
+        "vote_acc": vote_metrics["acc"],
+        "vote_pre": vote_metrics["pre"],
+        "vote_rec": vote_metrics["rec"],
+        "vote_f1": vote_metrics["f1"],
+
         "patient": np.array(patient_arr),
         "true": np.array(true_arr),
-        "pred": np.array(pred_arr),
+        "pred_mean": np.array(pred_mean_arr),
+        "pred_vote": np.array(pred_vote_arr),
         "prob": np.array(prob_arr),
     }
 
+def get_metrics(y_true, y_pred):
+    return {
+        "acc": accuracy_score(y_true, y_pred),
+        "pre": precision_score(y_true, y_pred, average="macro", zero_division=0),
+        "rec": recall_score(y_true, y_pred, average="macro", zero_division=0),
+        "f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
+    }
+
+
+def majority_vote(dep_logits):
+    seg_pred = dep_logits.argmax(dim=-1)
+
+    if seg_pred.dim() == 0:
+        return seg_pred
+
+    return torch.mode(seg_pred).values
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -129,7 +163,23 @@ def main():
 
     print("=" * 80)
     print(f"Test Dep Loss: {result['dep_loss']:.4f}")
-    print(f"Test Dep Acc : {result['dep_acc']:.4f}")
+
+    print(
+        f"[Mean Logits] "
+        f"Acc: {result['mean_acc']:.4f} | "
+        f"Pre: {result['mean_pre']:.4f} | "
+        f"Rec: {result['mean_rec']:.4f} | "
+        f"F1: {result['mean_f1']:.4f}"
+    )
+
+    print(
+        f"[Vote]        "
+        f"Acc: {result['vote_acc']:.4f} | "
+        f"Pre: {result['vote_pre']:.4f} | "
+        f"Rec: {result['vote_rec']:.4f} | "
+        f"F1: {result['vote_f1']:.4f}"
+    )
+
     print("=" * 80)
 
     with open(SAVE_RESULT_PATH, "w", newline="", encoding="utf-8") as f:
@@ -138,22 +188,25 @@ def main():
         writer.writerow([
             "patient",
             "ground_truth",
-            "prediction",
+            "pred_mean",
+            "pred_vote",
             "prob_0",
             "prob_1",
             "prob_2",
         ])
 
-        for patient, true, pred, prob in zip(
+        for patient, true, pred_mean, pred_vote, prob in zip(
             result["patient"],
             result["true"],
-            result["pred"],
+            result["pred_mean"],
+            result["pred_vote"],
             result["prob"],
         ):
             writer.writerow([
                 int(patient),
                 int(true),
-                int(pred),
+                int(pred_mean),
+                int(pred_vote),
                 float(prob[0]),
                 float(prob[1]),
                 float(prob[2]),
