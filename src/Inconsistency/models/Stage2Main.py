@@ -210,6 +210,21 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
             })
     metrics = get_metrics(true_arr, pred_arr)
 
+    # gpt
+    from sklearn.metrics import classification_report, confusion_matrix
+
+    print("Confusion matrix:")
+    print(confusion_matrix(true_arr, pred_arr, labels=[0, 1, 2]))
+
+    print(classification_report(
+        true_arr,
+        pred_arr,
+        labels=[0, 1, 2],
+        digits=4,
+        zero_division=0
+    ))
+    # ===
+
     from collections import Counter
     print("Val true dist:", Counter(true_arr))
     print("Val  pred dist:", Counter(pred_arr))
@@ -241,15 +256,16 @@ def main():
             "dropout": 0.3,
             "weight_decay": 1e-4,
             "loss_total": "L_Atei + L_Depression",
-            "class_weights": [1.0, 1.3, 1.3],
+            "class_weights": None,
+            "shuffle": True,
         },
         save_code=True
     )
 
     # 1. Dataset
     trDS=daicwoz_dataset(fold="tr")
-    # tr_loader=DataLoader(trDS,collate_fn=collate_fn, shuffle=True)
-    tr_loader=DataLoader(trDS,collate_fn=collate_fn)
+    tr_loader=DataLoader(trDS,collate_fn=collate_fn, shuffle=True)
+    # tr_loader=DataLoader(trDS,collate_fn=collate_fn)
     # gpt
     # from torch.utils.data import Subset
     # baseTrDS = daicwoz_dataset(fold="tr")
@@ -261,8 +277,6 @@ def main():
 
     # 2. Model parameter setting
     model=whole_model(D_MODEL,NHEAD).to(device)
-    loss_atei=nn.CrossEntropyLoss()
-    loss_dep=nn.CrossEntropyLoss()
     opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=1e-4)
     scaler = torch.GradScaler('cuda')
     best_val_f1=-1.0
@@ -270,27 +284,24 @@ def main():
     # gpt
     from collections import Counter
     counter = Counter([int(x[2]) for x in trDS.ds])
-    weights = torch.tensor([1.0, 1.3, 1.3], dtype=torch.float).to(device)
+    # weights = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float).to(device)
 
     print("Train dep dist:", counter)
-    print("Class weights:", weights)
+    # print("Class weights:", weights)
 
     loss_atei = nn.CrossEntropyLoss()
-    loss_dep = nn.CrossEntropyLoss(weight=weights)
+    loss_dep = nn.CrossEntropyLoss()
+    # loss_dep = nn.CrossEntropyLoss(weight=weights)
     # ====
 
 
 
-    tr_history=[]
-    val_history=[]
+
     # 3. Train
     for epoch in range(1,EPOCHS+1):
         tr_result=train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, epoch, EPOCHS,scaler)
         val_result=val(model, val_loader, loss_dep, device, epoch, EPOCHS)
 
-
-        tr_history.append(tr_result)
-        val_history.append(val_result)
 
         print("=" * 80)
         print(f"Epoch [{epoch}/{EPOCHS}]")
@@ -314,37 +325,24 @@ def main():
         )
 
         wandb.log({
-            # scalar metrics
-            "loss/dep_train": tr_result["dep_loss"],
-            "loss/dep_val": val_result["dep_loss"],
-            "loss/atei_train": tr_result["atei_loss"],
-            "loss/total_train": tr_result["tot_loss"],
-
+            # Train
+            "train/atei_loss": tr_result["atei_loss"],
+            "train/dep_loss": tr_result["dep_loss"],
+            "train/tot_loss": tr_result["tot_loss"],
             "train/atei_acc": tr_result["cur_atei_acc"],
             "train/dep_acc": tr_result["cur_dep_acc"],
 
+            # Val
+            "val/dep_loss": val_result["dep_loss"],
             "val/acc": val_result["acc"],
-            "val/precision": val_result["pre"],
-            "val/recall": val_result["rec"],
+            "val/pre": val_result["pre"],
+            "val/rec": val_result["rec"],
             "val/f1": val_result["f1"],
 
+            # Other
             "lr": opt.param_groups[0]["lr"],
         }, step=epoch)
 
-        epochs = list(range(1, epoch + 1))
-
-        wandb.log({
-            "charts/overfitting_dep_loss": wandb.plot.line_series(
-                xs=epochs,
-                ys=[
-                    [x["dep_loss"] for x in tr_history],
-                    [x["dep_loss"] for x in val_history],
-                ],
-                keys=["train_dep_loss", "val_dep_loss"],
-                title="Overfitting Check: Depression Loss",
-                xname="epoch",
-            )
-        }, step=epoch)
 
         if val_result["f1"] > best_val_f1:
             best_val_f1 = val_result["f1"]

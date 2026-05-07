@@ -61,7 +61,19 @@ def test(model, test_loader, loss_dep, device):
 
                 patient_dep = dep_logits.mean(dim=0)
 
-                feature_arr.append(feature.detach().cpu().float().view(-1).numpy())
+                # gpt
+                feat = feature.detach().cpu().float()
+
+                # 如果是 [T, 128]
+                if feat.dim() == 2:
+                    feat = feat.mean(dim=0)
+
+                # 如果是 [1,128]（其實這個也會被處理成一樣）
+                # elif feat.dim() == 1:
+                #     pass
+
+                feature_arr.append(feat.numpy())
+                # ===
 
                 L_Depression = loss_dep(
                     patient_dep.unsqueeze(0),
@@ -113,7 +125,7 @@ def test(model, test_loader, loss_dep, device):
         "pred_vote": np.array(pred_vote_arr),
         "prob": np.array(prob_arr),
 
-        "feature": np.array(feature_arr),
+        "feature": np.stack(feature_arr, axis=0),
     }
 
 def get_metrics(y_true, y_pred):
