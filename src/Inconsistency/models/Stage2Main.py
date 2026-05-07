@@ -16,9 +16,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 D_MODEL=128
 NHEAD=8
-LR=1e-4
+LR=3e-5
 EPOCHS=50
 TRANSFORMER_ENC_LAYERS=1
+LAMBDA_ATEI = 0.1
+ALPHA_INIT = 0.5
 
 
 class whole_model(nn.Module):
@@ -40,7 +42,7 @@ class whole_model(nn.Module):
         self.fc1=nn.Linear(3*embd_size,embd_size)
         self.fc2=nn.Linear(embd_size,embd_size)
         self.fc3=nn.Linear(embd_size, embd_size)
-        self.alpha = nn.Parameter(torch.ones(embd_size))
+        self.alpha = nn.Parameter(torch.ones(embd_size)*ALPHA_INIT)
         self.oup=nn.Linear(embd_size,3)
         
     def forward(self, XA, XT, aMask=None, tMask=None, return_feature=False):
@@ -121,12 +123,21 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
                     
             L_Atei = loss_atei(patient_atei.unsqueeze(0), atei_label.unsqueeze(0)) # 加batch
             L_Depression = loss_dep(patient_dep.unsqueeze(0), dep_label.unsqueeze(0)) # 加batch
-            L_Total=L_Atei+L_Depression
+            L_Total=LAMBDA_ATEI*L_Atei+L_Depression
             # ===
-                
+
+        # gpt
         scaler.scale(L_Total).backward()
+
+        scaler.unscale_(opt)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         scaler.step(opt)
         scaler.update()
+        # ===
+        # scaler.scale(L_Total).backward()
+        # scaler.step(opt)
+        # scaler.update()
 
         # Loss
         totAteiLoss += L_Atei.item()
@@ -255,7 +266,7 @@ def main():
             "TRANSFORMER_ENC_LAYERS": TRANSFORMER_ENC_LAYERS,
             "dropout": 0.3,
             "weight_decay": 1e-4,
-            "loss_total": "L_Atei + L_Depression",
+            "loss_total": "LAMBDA_ATEI*L_Atei + L_Depression",
             "class_weights": None,
             "shuffle": True,
         },
@@ -299,12 +310,12 @@ def main():
 
     # 3. Train
     for epoch in range(1,EPOCHS+1):
+        print("=" * 80)
+        print(f"Epoch [{epoch}/{EPOCHS}]")
+
         tr_result=train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, epoch, EPOCHS,scaler)
         val_result=val(model, val_loader, loss_dep, device, epoch, EPOCHS)
 
-
-        print("=" * 80)
-        print(f"Epoch [{epoch}/{EPOCHS}]")
 
         print(
             f"[Train] "
