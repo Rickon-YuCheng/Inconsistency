@@ -295,14 +295,14 @@ def main():
     # gpt
     from collections import Counter
     counter = Counter([int(x[2]) for x in trDS.ds])
-    # weights = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float).to(device)
+    weights = torch.tensor([1.0, 1.3, 1.3], dtype=torch.float).to(device)
 
     print("Train dep dist:", counter)
-    # print("Class weights:", weights)
+    print("Class weights:", weights)
 
     loss_atei = nn.CrossEntropyLoss()
-    loss_dep = nn.CrossEntropyLoss()
-    # loss_dep = nn.CrossEntropyLoss(weight=weights)
+    # loss_dep = nn.CrossEntropyLoss()
+    loss_dep = nn.CrossEntropyLoss(weight=weights)
     # ====
 
 
