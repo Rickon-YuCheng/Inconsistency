@@ -12,6 +12,8 @@ wandb/
 .sb_cache
 pretrained_models/
 wav2vec2_checkpoints/
+weights/
+nested_learning/
 
 # --- 圖 ---
 *.jpg

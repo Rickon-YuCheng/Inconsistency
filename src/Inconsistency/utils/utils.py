@@ -51,22 +51,23 @@ class Averager:
 
 class Timer:
     def __init__(self):
-        self.v = time.time()
+        self.start = time.time()
 
-    def s(self):
-        self.v = time.time()
+    def elapsed(self):
+        return time.time() - self.start
 
-    def t(self):
-        return time.time() - self.v
+    def text(self):
+        t = self.elapsed()
 
+        if t >= 3600:
+            return f"{t / 3600:.1f}h"
+        elif t >= 60:
+            return f"{t / 60:.1f}m"
+        else:
+            return f"{t:.1f}s"
 
-def time_text(t):
-    if t >= 3600:
-        return "{:.1f}h".format(t / 3600)
-    elif t >= 60:
-        return "{:.1f}m".format(t / 60)
-    else:
-        return "{:.1f}s".format(t)
+    def __str__(self):
+        return self.text()
 
 
 def compute_num_params(model, text=False):

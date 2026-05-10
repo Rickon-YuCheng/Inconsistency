@@ -36,7 +36,7 @@ def loadAudio():
                 print(f"PATH: {s_path} does not exist")
                 continue
 
-            for j in s_path.glob("*.wav"):
+            for j in sorted(s_path.glob("*.wav"), key=lambda p: int(p.stem.split("_")[0])):
                 waveframe, sr = torchaudio.load(str(j))
 
                 # preprocessing for HuBERT
@@ -74,9 +74,9 @@ def loadText():
             x = x[x.speaker == "Participant"]
             x = x["value"].dropna().tolist()
             j = 0
+            model.eval()
             for j in x:
                 inputs = tokenizer(j, return_tensors="pt").to("cuda")
-                model.eval()
                 with torch.no_grad():
                     outputs=model(**inputs)
                     Personal_list.append(outputs.last_hidden_state)

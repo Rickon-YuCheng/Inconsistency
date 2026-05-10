@@ -18,6 +18,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+SPLIT = "all" # all,train,val,test
 CFG_PATH = "configs/inconsistentLabel.yaml"
 TRAIN_CSV="datasets/DAICWOZ/train_split_Depression_AVEC2017.csv"
 VAL_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
@@ -26,6 +27,22 @@ VAL_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
 # end=302
 # start = 300
 # end = 493  # +1
+
+
+def parse_args():
+    with open(CFG_PATH, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    parser = argparse.ArgumentParser()
+    parser.set_defaults(**cfg)
+    parser.add_argument("--ds", type=str, help="upper case")
+    parser.add_argument("--split",type=str,default=SPLIT,choices=["train", "val", "test", "all"],
+)
+    args = parser.parse_args()
+
+    assert args.ds in ["DAICWOZ", "MOSI"], f"Invalid ds name: {args.ds}"
+
+    return args
 
 def get_Split_and_GroundTrue():
     """ 
@@ -68,29 +85,33 @@ def get_Split_and_GroundTrue():
     test_idx = test_df["Participant_ID"].astype(int).tolist() # len: 35 [302,307,..]
     return depMap, train_idx, val_idx, test_idx
 
-def parse_args():
-    with open(CFG_PATH, "r") as f:
-        cfg = yaml.safe_load(f)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ds", type=str, help="upper case")
-    parser.set_defaults(**cfg)
-    args = parser.parse_args()
+def get_patient_ids(split: str):
+    _, train_idx, val_idx, test_idx = get_Split_and_GroundTrue()
 
-    assert args.ds in ["DAICWOZ", "MOSI"], f"Invalid ds name: {args.ds}"
+    if split == "train":
+        return train_idx
+    elif split == "val":
+        return val_idx
+    elif split == "test":
+        return test_idx
+    elif split == "all":
+        return train_idx + val_idx + test_idx
+    else:
+        raise ValueError(f"unknown split: {split}")
 
-    return args
 
 
-def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
+
+def DISTILBERT(ds: str, ds_dir: str, device: str, split: str) -> None:
     print("\n**DistilBert**")
     
     classifier = pipeline(model="lxyuan/distilbert-base-multilingual-cased-sentiments-student")
     poslist, neglist, neulist, idx = [], [], [], []
-    _,trDS,_,_=get_Split_and_GroundTrue()
+    patient_ids = get_patient_ids(split)
 
     # for i in trDS:
-    for i in trDS:
+    for i in patient_ids:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
 
         if not os.path.exists(filePath):
@@ -121,11 +142,11 @@ def DISTILBERT(ds: str, ds_dir: str, device: str) -> None:
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(idx, poslist, neglist, neulist)
-    np.savez("DistilBert", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
+    draw(idx, poslist, neglist, neulist, f"DistilBert_{split}.jpg")
+    np.savez(f"DistilBert_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
 
 
-def draw(idx, poslist, neglist, neulist):
+def draw(idx, poslist, neglist, neulist, out_path):
     """draw figure"""
     # x = [i for i in trDS]
     x=idx
@@ -140,11 +161,11 @@ def draw(idx, poslist, neglist, neulist):
     plt.title("fig1, 300~492", fontsize=24)
     plt.xlabel("patient")
     plt.ylabel("emotion distribution")
-    plt.savefig("test.jpg")
+    plt.savefig(out_path)
     plt.close()
 
 
-def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
+def WAV2VEC2(ds: str, ds_dir: str, device: str, split: str) -> None:
     """sb -> Speech brain"""
     print("\n**WAV2VEC2**")
     sb_Path = Path(".sb_cache")
@@ -158,10 +179,10 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
     )
     # totDict = {}
     poslist, neglist, neulist, idx = [], [], [], []
-    _,trDS,_,_=get_Split_and_GroundTrue()
+    patient_ids = get_patient_ids(split)
     # tr_val_DS=trDS+valDS
 
-    for i in trDS:
+    for i in patient_ids:
         p_path = Path(f"datasets/DAICWOZ/{i}_P/{i}_aSplits")
         wavFiles = list(p_path.glob("*.wav"))
         if len(wavFiles) == 0:
@@ -190,15 +211,15 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str) -> None:
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(idx, poslist, neglist, neulist)
-    np.savez("Wav2Vec2", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
-    breakpoint()
+    draw(idx, poslist, neglist, neulist, f"Wav2Vec2_{split}.jpg")
+    np.savez(f"Wav2Vec2_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
+    # breakpoint()
 
-def audioPreprosessing(ds: str, ds_dir: str, device: str):
+def audioPreprosessing(ds: str, ds_dir: str, device: str, split: str):
     print("\n**audioPreprocessing**")
-    _,trDS,_,_=get_Split_and_GroundTrue()
+    patient_ids = get_patient_ids(split)
 
-    for i in trDS:
+    for i in patient_ids:
         csvfilePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         audiofilePath = f"{ds_dir}/{i}_P/{i}_AUDIO.wav"
 
@@ -282,15 +303,15 @@ def HOWNET_txt():
     return HNdict
 
 
-def HOWNET(ds: str, ds_dir: str, device: str):
+def HOWNET(ds: str, ds_dir: str, device: str, split: str):
     print("\n**HOWNET**")
     HNdict = HOWNET_txt()
     result_list = []
     poslist, neglist, neulist = [], [], []
     idx=[]
-    _,trDS,_,_=get_Split_and_GroundTrue()
+    patient_ids = get_patient_ids(split)
 
-    for i in trDS:
+    for i in patient_ids:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
         pos = neg = neu = 0
         if not os.path.exists(filePath):
@@ -331,7 +352,8 @@ def HOWNET(ds: str, ds_dir: str, device: str):
         result_list.append(emoLabel)
     # print(result_list)
     # breakpoint()
-    np.savez("HowNet", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx,dtype=np.int64))
+    draw(idx, poslist, neglist, neulist, f"HowNet_{split}.jpg")
+    np.savez(f"HowNet_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx,dtype=np.int64))
 
 
 if __name__ == "__main__":
@@ -341,4 +363,4 @@ if __name__ == "__main__":
     audioPreprosessing(**vars(args))
     WAV2VEC2(**vars(args))
 
-    HOWNET(**vars(args))
+    # HOWNET(**vars(args))

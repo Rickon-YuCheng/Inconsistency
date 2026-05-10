@@ -1,4 +1,6 @@
 import torch.nn as nn
+import wandb
+from datetime import datetime
 from sklearn.metrics import f1_score
 import argparse
 from pathlib import Path
@@ -10,7 +12,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from collections import Counter
 import numpy as np
-from Inconsistency.utils import Timer
+from Inconsistency.utils import Timer, set_seed, numpy_random_init
 from torch.utils.checkpoint import checkpoint
 from Inconsistency.datasets.inconsistentLabel import get_Split_and_GroundTrue
 from tqdm import tqdm
@@ -25,7 +27,7 @@ D_MODEL=128
 NHEAD=8
 LR=5e-5
 EPOCHS=30
-TRANSFORMER_ENC_LAYERS=2
+TRANSFORMER_ENC_LAYERS=1
 CHUNK_SIZE=1
 # RANDOM_SEED=42
 
@@ -43,8 +45,14 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--max_batches", type=int, default=None)
 
-    parser.add_argument("--save_path", type=str, default="stage1Weights.pth")
+    parser.add_argument("--save_dir", type=str, default="weights/stage1")
     parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--label_smoothing", type=float, default=0.05)
+
+    parser.add_argument("--use_wandb", action="store_true")
+    parser.add_argument("--wandb_project", type=str, default="Emotion inconsistency - Stage1")
+    parser.add_argument("--wandb_name", type=str, default=None)
 
     return parser.parse_args()
 
@@ -65,14 +73,14 @@ class daicwoz_dataset(Dataset):
             patient_Idx=test_Idx          
         else: raise Exception('fold error')
 
-        PseudoLabel = np.load("PseudoLabel_all.npz")
+        PseudoLabel = np.load("PseudoLabel_all_distilbert_zdist_q30_70.npz")
         patientIdx = PseudoLabel["patientIdx"]
         atei_label = PseudoLabel["label"]
         PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, atei_label)}
 
 
         for p in patient_Idx:
-            
+            if p not in PseudoMap: continue
             a_path=a_root / f"{p}_acoustic.pt"
             t_path=t_root / f"{p}_text.pt"
 
@@ -187,20 +195,41 @@ def build_pseudo_balanced_sampler(ds, seed=42):
         for label in labels
     ]
 
-    generator = torch.Generator()
-    generator.manual_seed(seed)
+    g = torch.Generator()
+    g.manual_seed(seed)
 
     sampler = WeightedRandomSampler(
         weights=sample_weights,
         num_samples=len(sample_weights),
         replacement=True,
-        generator=generator,
+        generator=g,
     )
 
     return sampler
 def main():
-    total_timer=Timer()
+    set_seed(ARGS.seed)
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+    run_name = ARGS.wandb_name
+    if run_name is None:
+        run_name = (f"stage1_seed{ARGS.seed}_lr{LR:.0e}_wd{ARGS.weight_decay:.0e}_do{ARGS.dropout:.2f}_ls{ARGS.label_smoothing:.2f}_d{D_MODEL}_l{TRANSFORMER_ENC_LAYERS}_{run_id}"
+        )
+
+
+
+    total_timer = Timer()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    save_dir = Path(ARGS.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    g = torch.Generator()
+    g.manual_seed(ARGS.seed)
+
+    best_val_f1 = -1.0
+    patience = 50
+    no_improve = 0
     # PseudoLabel=np.load("PseudoLabel.npz")
     # patientIdx, PseudoL = PseudoLabel["patientIdx"], PseudoLabel["label"]
     # PseudoMap = {int(x): int(y) for x, y in zip(patientIdx, PseudoL)}
@@ -225,17 +254,43 @@ def main():
     print_ds_label_dist("Stage1 Train", trDS)
     print_ds_label_dist("Stage1 Val", valDS)
 
-    sampler = build_pseudo_balanced_sampler(trDS, seed=ARGS.seed)
+    if ARGS.use_wandb:
+        wandb.init(
+            project=ARGS.wandb_project,
+            name=run_name,
+            config={
+                "seed": ARGS.seed,
+                "d_model": D_MODEL,
+                "nhead": NHEAD,
+                "lr": LR,
+                "epochs": EPOCHS,
+                "enc_layers": TRANSFORMER_ENC_LAYERS,
+                "chunk_size": CHUNK_SIZE,
+                "dropout": ARGS.dropout,
+                "weight_decay": ARGS.weight_decay,
+                "label_smoothing": ARGS.label_smoothing,
+                "pseudo_label_file": "PseudoLabel_all_distilbert_zdist_q30_70.npz",
+                "train_samples": len(trDS),
+                "val_samples": len(valDS),
+            },
+        )
 
-    tr_loader = DataLoader(trDS, collate_fn=collate_fn, sampler=sampler, shuffle=False)
-    val_loader = DataLoader(valDS, collate_fn=collate_fn, shuffle=False)
+    if ARGS.use_wandb:
+        wandb.config.update({
+            "train_samples": len(trDS),
+            "val_samples": len(valDS),
+        })
+
+    # sampler = build_pseudo_balanced_sampler(trDS, seed=ARGS.seed)
+
+    tr_loader = DataLoader(trDS, collate_fn=collate_fn, shuffle=True,generator=g, worker_init_fn=numpy_random_init)
+    val_loader = DataLoader(valDS, collate_fn=collate_fn, shuffle=False,generator=g, worker_init_fn=numpy_random_init)
 
     model=atei(D_MODEL,NHEAD).to(device)
     opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=ARGS.label_smoothing)
     scaler = torch.GradScaler('cuda')
     history=[]
-    best_val_f1 = -1.0
 
     model.train()
     for epoch in range(EPOCHS):
@@ -246,7 +301,7 @@ def main():
 
         pbar = tqdm(
             tr_loader,
-            desc=f"Train Epoch {epoch+1}/{EPOCHS}",
+            f"Train Epoch {epoch+1}/{EPOCHS}",
             unit="patient",
             leave=False,
         )
@@ -265,9 +320,13 @@ def main():
             opt.zero_grad()
 
             with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
-                _,logits=model(xa,xt,aMask,tMask) # logits:　[LenFeat,2] eg: [89,2]
-                patient_logit=logits.mean(dim=0) # torch.Size([2])
+                feat, logits = model(xa, xt, aMask, tMask)
+                patient_feat = feat.mean(dim=0)
+                patient_logit = model.patient_oup(patient_feat)
                 loss = criterion(patient_logit.unsqueeze(0), atei_label.unsqueeze(0))
+                # _,logits=model(xa,xt,aMask,tMask) # logits:　[LenFeat,2] eg: [89,2]
+                # patient_logit=logits.mean(dim=0) # torch.Size([2])
+                # loss = criterion(patient_logit.unsqueeze(0), atei_label.unsqueeze(0))
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -312,12 +371,86 @@ def main():
             zero_division=0,
         ))
 
+        if ARGS.use_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+
+                "train/loss": train_loss,
+                "train/acc": train_acc,
+
+                "val/loss": val_result["loss"],
+                "val/acc": val_result["acc"],
+                "val/macro_f1": val_result["macro_f1"],
+
+                "val/pred_0": int(np.bincount(val_result["y_pred"], minlength=2)[0]),
+                "val/pred_1": int(np.bincount(val_result["y_pred"], minlength=2)[1]),
+                "val/label_0": int(np.bincount(val_result["y_true"], minlength=2)[0]),
+                "val/label_1": int(np.bincount(val_result["y_true"], minlength=2)[1]),
+
+                "best/val_macro_f1": best_val_f1,
+                "no_improve": no_improve,
+
+                "val/conf_mat": wandb.plot.confusion_matrix(
+                    y_true=val_result["y_true"],
+                    preds=val_result["y_pred"],
+                    class_names=["inconsistency", "consistency"],
+                ),
+            })
+
         if val_result["macro_f1"] > best_val_f1:
             best_val_f1 = val_result["macro_f1"]
-            torch.save(model.state_dict(), ARGS.save_path)
-            print(f"[Save Best] Val MacroF1: {best_val_f1:.4f} -> {ARGS.save_path}")
-    imsave(EPOCHS, history)
+            no_improve = 0
+            ckpt_name = (
+                f"stage1_"
+                f"{run_id}_"
+                f"seed{ARGS.seed}_"
+                f"f1{best_val_f1:.4f}_"
+                f"ep{epoch+1:03d}_"
+                f"lr{LR:.0e}_"
+                f"wd{ARGS.weight_decay:.0e}_"
+                f"d{D_MODEL}_"
+                f"l{TRANSFORMER_ENC_LAYERS}.pt"
+            )
+
+            ckpt_path = save_dir / ckpt_name
+
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "epoch": epoch + 1,
+                    "best_val_f1": best_val_f1,
+                    "val_acc": val_result["acc"],
+                    "val_loss": val_result["loss"],
+                    "val_cm": val_result["cm"],
+                    "args": vars(ARGS),
+                    "d_model": D_MODEL,
+                    "nhead": NHEAD,
+                    "enc_layers": TRANSFORMER_ENC_LAYERS,
+                    "lr": LR,
+                    "weight_decay": ARGS.weight_decay,
+                    "dropout": ARGS.dropout,
+                    "pseudo_label_file": "PseudoLabel_all_distilbert_zdist_q30_70.npz",
+                },
+                ckpt_path,
+            )
+
+            print(f"[Save Best] Val MacroF1: {best_val_f1:.4f} -> {ckpt_path}")
+        else:
+            no_improve += 1
+            print(f"[EarlyStopping] no improvement: {no_improve}/{patience}")
+
+            if no_improve >= patience:
+                print(f"[EarlyStopping] Stop at epoch {epoch+1}. Best Val MacroF1: {best_val_f1:.4f}")
+                break
+        # if val_result["macro_f1"] > best_val_f1:
+        #     best_val_f1 = val_result["macro_f1"]
+        #     torch.save(model.state_dict(), ARGS.save_path)
+        #     print(f"[Save Best] Val MacroF1: {best_val_f1:.4f} -> {ARGS.save_path}")
+    imsave(history)
     print(f"Total time: {total_timer}")
+    if ARGS.use_wandb:
+        wandb.finish()
+
 
 @torch.inference_mode()
 def validate(model, loader, criterion, device):
@@ -341,11 +474,16 @@ def validate(model, loader, criterion, device):
         tMask = tMask.to(device)
         atei_label = atei_label.to(device)
 
+        # with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
+        #     _, logits = model(xa, xt, aMask, tMask)
+        #     patient_logit = logits.mean(dim=0)
+        #     loss = criterion(patient_logit.unsqueeze(0), atei_label.unsqueeze(0))
+        #     loss = loss.mean()
         with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
-            _, logits = model(xa, xt, aMask, tMask)
-            patient_logit = logits.mean(dim=0)
+            feat, logits = model(xa, xt, aMask, tMask)
+            patient_feat = feat.mean(dim=0)
+            patient_logit = model.patient_oup(patient_feat)
             loss = criterion(patient_logit.unsqueeze(0), atei_label.unsqueeze(0))
-            loss = loss.mean()
         pred = patient_logit.argmax(dim=-1)
         correct += int(pred.item() == atei_label.item())
         totLoss += loss.item()
@@ -379,13 +517,13 @@ def validate(model, loader, criterion, device):
     }
 
 
-def imsave(EPOCHS, history):
-    fig,ax=plt.subplots()
+def imsave(history):
+    fig, ax = plt.subplots()
     ax.plot(range(1, len(history) + 1), history)
     plt.xlabel('Epoch')
-    plt.ylabel('BCELoss')
+    plt.ylabel('CrossEntropyLoss')
     plt.title('Training Loss')
-    plt.savefig("stage1_tr_BCEloss.jpg")
+    plt.savefig("stage1_tr_loss.jpg")
 
 class atei(nn.Module):
     def __init__(self,embd_size,nheads,inp_dim=1024):
@@ -398,10 +536,14 @@ class atei(nn.Module):
 
         self.Cross_Attn=at_cross_attn(embd_size)
 
+        self.dropout=nn.Dropout(ARGS.dropout)
+
         self.fc1=nn.Linear(4*embd_size,embd_size)
         self.fc2=nn.Linear(embd_size,embd_size)
         self.fc3=nn.Linear(embd_size,embd_size)
         self.oup=nn.Linear(embd_size,2)
+
+        self.patient_oup = nn.Linear(embd_size, 2)
         
 
     def forward(self,xa, xt, aMask=None, tMask=None):
@@ -443,8 +585,8 @@ class atei(nn.Module):
         avgXprimeT=self.maskMean(XprimeT, tMask) # XprimeT: torch.Size([87,23,1024])
         hE=torch.cat((avgXprimeA,avgXat,avgXta,avgXprimeT),dim=1)
         # Formula 5. FFN(Z)=ReLU(ZW_1+b_1)W_2+b_2
-        Fc1=F.relu(self.fc1(hE))
-        Fc2=F.relu(self.fc2(Fc1))
+        Fc1=self.dropout(F.relu(self.fc1(hE)))
+        Fc2=self.dropout(F.relu(self.fc2(Fc1)))
         Fc3=self.fc3(Fc2)
         Oup=self.oup(Fc3)
 

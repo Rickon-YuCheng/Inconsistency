@@ -1,80 +1,84 @@
-# """load npz to calculate z-score"""
+"""比原版還好"""
 
-# from sklearn.preprocessing import StandardScaler
-# import numpy as np
+"""
+產生 DAIC-WOZ 的 Acoustic-Textual Emotional Inconsistency, ATEI,
+高信心 pseudo labels。
 
-# SPLIT = "all"  # all, train, val, test
-# TEXT_SOURCE = "hownet"  # hownet or distilbert
+這個檔案的目標是根據 text modality 與 audio modality 的情緒型態差異，
+產生 patient-level 的一致 / 不一致 pseudo label，供 Stage1Tr 訓練 ATEI
+classifier 使用。
 
-# def load_emotion_npz(path: str):
-#     x = np.load(path)
-#     patient_idx = x["patientIdx"]
-#     feats = np.column_stack((x["a"], x["b"], x["c"]))
-#     feats = np.nan_to_num(feats, nan=0)
+背景
+----
+text 與 audio 使用的情緒辨識器本身有不同偏好。例如 DistilBERT 在文字情緒
+上常偏向 positive，而 Wav2Vec2/SpeechBrain 在語音情緒上常偏向 neutral。
+因此，若直接比較 raw emotion counts 或直接比較 argmax emotion label，
+很容易把模型本身的偏差誤判成 acoustic-textual inconsistency。
 
-#     scaler = StandardScaler()
-#     z = scaler.fit_transform(feats)
-#     labels = np.argmax(z, axis=1)
+為了降低這個問題，本檔案先對每個 modality 各自做 z-score normalization，
+讓每位 patient 的情緒分布變成「相對於該 modality 整體分布的偏移」。
 
-#     print(f"{path} mean: {scaler.mean_}")
-#     print(f"{path} labels: {labels}")
+方法
+----
+每位 patient 會有兩組情緒數量向量：
 
-#     return labels, patient_idx
+    Text  emotion counts: [pos, neg, neu]
+    Audio emotion counts: [pos, neg, neu]
 
+接著分別在 text modality 與 audio modality 內做 z-score：
 
-# def T_HN_zscores(split: str = SPLIT):
-#     return load_emotion_npz(f"HowNet_{split}.npz")
+    T_z = zscore(text emotion counts)
+    A_z = zscore(audio emotion counts)
 
+然後計算兩個 z-score emotion vector 的距離：
 
-# def T_zscores(split: str = SPLIT):
-#     return load_emotion_npz(f"DistilBert_{split}.npz")
+    score = ||T_z - A_z||_2
 
+score 的意義如下：
 
-# def A_zscores(split: str = SPLIT):
-#     return load_emotion_npz(f"Wav2Vec2_{split}.npz")
+    score 越小 -> text/audio 情緒型態越一致
+    score 越大 -> text/audio 情緒型態越不一致
 
+Pseudo label 規則
+-----------------
+本檔案不會強迫所有 patient 都產生 pseudo label，而是只保留 score 分布兩端的
+高信心樣本。
 
-# def INCONSISTENCY(split: str = SPLIT, text_source: str = TEXT_SOURCE):
-#     # T, patientIdx = T_zscores()
-#     if text_source == "hownet":
-#         T, TpatientIdx = T_HN_zscores(split)
-#     elif text_source == "distilbert":
-#         T, TpatientIdx = T_zscores(split)
-#     else:
-#         raise ValueError(f"unknown text_source: {text_source}")
-    
-#     A, ApatientIdx = A_zscores()
-#     assert np.array_equal(TpatientIdx, ApatientIdx), " T and A id error "
+以 low_q=30, high_q=70 為例：
 
+    score <= 第 30 百分位數 -> consistency label   = 1
+    score >= 第 70 百分位數 -> inconsistency label = 0
+    中間 40%                -> 視為模糊樣本，不給 label，不用於 Stage1Tr
 
-#     result = []
-#     Con = Incon = 0
+這樣可以避免把中間不明確的 patient 硬分成一致或不一致，降低 pseudo label
+noise。
 
+輸出
+----
+輸出的 .npz 檔案只包含被保留下來的高信心 patient：
 
-#     for i in range(0, len(T)):
-#         if T[i] == A[i]:
-#             result.append(1)  # 一致
-#             Con += 1
-#         elif T[i] != A[i]:
-#             result.append(0)  # 不一致
-#             Incon += 1
-#     print(f"result: {result}")
-#     print(f"一致: {Con} 不一致:{Incon}")
-#     # breakpoint()
-#     out_path = f"PseudoLabel_{split}.npz"
-#     np.savez(
-#         out_path,
-#         patientIdx=np.array(ApatientIdx, dtype=np.int64),
-#         label=np.array(result, dtype=np.int64),
-#     )
-#     print(f"saved: {out_path}")
+    patientIdx : 被保留的 patient ids
+    label      : pseudo labels，1 = consistency，0 = inconsistency
+    score      : 被保留 patient 的 inconsistency scores
 
+另外也會保存診斷資訊：
 
-# if __name__ == "__main__":
-#     INCONSISTENCY()
+    all_patientIdx : 過濾前的全部 patient ids
+    all_score      : 全部 patient 的 inconsistency scores
+    low_th         : consistency threshold
+    high_th        : inconsistency threshold
 
+檔名範例
+--------
+    PseudoLabel_all_distilbert_zdist_q30_70.npz
 
+意思是：
 
+    all        : 使用 all split 產生 pseudo label
+    distilbert : text emotion source 使用 DistilBERT
+    zdist      : 使用 z-score vector distance
+    q30_70     : 使用第 30 與第 70 百分位數作為門檻
+"""
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 
