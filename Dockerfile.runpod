@@ -1,0 +1,40 @@
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV UV_LINK_MODE=copy
+ENV PATH="/root/.local/bin:/workspace/.venv/bin:${PATH}"
+
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    wget \
+    ffmpeg \
+    libsndfile1 \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+COPY .python-version pyproject.toml uv.lock README.md /workspace/
+
+RUN uv python install 3.10
+RUN uv sync --frozen
+
+RUN mkdir -p /workspace/weights/stage1 /workspace/weights/stage2
+
+COPY configs /workspace/configs
+COPY scripts /workspace/scripts
+COPY nested_learning /workspace/nested_learning
+COPY src /workspace/src
+COPY Makefile test.py CITATION.cff LICENSE /workspace/
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+CMD ["uv", "run", "src/Inconsistency/models/Stage2Tr_v1.py"]

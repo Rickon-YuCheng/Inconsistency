@@ -76,9 +76,11 @@ def get_Split_and_GroundTrue():
         depMap[pid] = score_to_label(score) # [303: 0, .., 491: 1, 302: 0, .., 492: 0]
     
     patient_df = df[["Participant_ID", "PHQ8_Score"]]
+    patient_df = patient_df.copy()
+    patient_df["label"] = patient_df["PHQ8_Score"].apply(score_to_label)
     # 7:2:1
-    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=42)
-    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=42)
+    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=42,stratify=patient_df["label"])
+    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=42,stratify=tr_val_df["label"])
 
     train_idx = tr_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
     val_idx = val_df["Participant_ID"].astype(int).tolist()

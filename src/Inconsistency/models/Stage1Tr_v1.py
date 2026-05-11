@@ -1,3 +1,4 @@
+"""可以嘗試將判斷為不一致距離的閥值自動調整"""
 import torch.nn as nn
 import wandb
 from datetime import datetime
@@ -286,7 +287,7 @@ def main():
     tr_loader = DataLoader(trDS, collate_fn=collate_fn, shuffle=True,generator=g, worker_init_fn=numpy_random_init)
     val_loader = DataLoader(valDS, collate_fn=collate_fn, shuffle=False,generator=g, worker_init_fn=numpy_random_init)
 
-    model=atei(D_MODEL,NHEAD).to(device)
+    model=atei(D_MODEL,NHEAD, dropout=ARGS.dropout).to(device)
     opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
     criterion = nn.CrossEntropyLoss(label_smoothing=ARGS.label_smoothing)
     scaler = torch.GradScaler('cuda')
@@ -371,31 +372,6 @@ def main():
             zero_division=0,
         ))
 
-        if ARGS.use_wandb:
-            wandb.log({
-                "epoch": epoch + 1,
-
-                "train/loss": train_loss,
-                "train/acc": train_acc,
-
-                "val/loss": val_result["loss"],
-                "val/acc": val_result["acc"],
-                "val/macro_f1": val_result["macro_f1"],
-
-                "val/pred_0": int(np.bincount(val_result["y_pred"], minlength=2)[0]),
-                "val/pred_1": int(np.bincount(val_result["y_pred"], minlength=2)[1]),
-                "val/label_0": int(np.bincount(val_result["y_true"], minlength=2)[0]),
-                "val/label_1": int(np.bincount(val_result["y_true"], minlength=2)[1]),
-
-                "best/val_macro_f1": best_val_f1,
-                "no_improve": no_improve,
-
-                "val/conf_mat": wandb.plot.confusion_matrix(
-                    y_true=val_result["y_true"],
-                    preds=val_result["y_pred"],
-                    class_names=["inconsistency", "consistency"],
-                ),
-            })
 
         if val_result["macro_f1"] > best_val_f1:
             best_val_f1 = val_result["macro_f1"]
@@ -439,9 +415,37 @@ def main():
             no_improve += 1
             print(f"[EarlyStopping] no improvement: {no_improve}/{patience}")
 
-            if no_improve >= patience:
-                print(f"[EarlyStopping] Stop at epoch {epoch+1}. Best Val MacroF1: {best_val_f1:.4f}")
-                break
+
+
+        if ARGS.use_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+
+                "train/loss": train_loss,
+                "train/acc": train_acc,
+
+                "val/loss": val_result["loss"],
+                "val/acc": val_result["acc"],
+                "val/macro_f1": val_result["macro_f1"],
+
+                "val/pred_0": int(np.bincount(val_result["y_pred"], minlength=2)[0]),
+                "val/pred_1": int(np.bincount(val_result["y_pred"], minlength=2)[1]),
+                "val/label_0": int(np.bincount(val_result["y_true"], minlength=2)[0]),
+                "val/label_1": int(np.bincount(val_result["y_true"], minlength=2)[1]),
+
+                "best/val_macro_f1": best_val_f1,
+                "no_improve": no_improve,
+
+                "val/conf_mat": wandb.plot.confusion_matrix(
+                    y_true=val_result["y_true"],
+                    preds=val_result["y_pred"],
+                    class_names=["inconsistency", "consistency"],
+                ),
+            })
+        if no_improve >= patience:
+            print(f"[EarlyStopping] Stop at epoch {epoch+1}. Best Val MacroF1: {best_val_f1:.4f}")
+            break
+
         # if val_result["macro_f1"] > best_val_f1:
         #     best_val_f1 = val_result["macro_f1"]
         #     torch.save(model.state_dict(), ARGS.save_path)
@@ -526,17 +530,17 @@ def imsave(history):
     plt.savefig("stage1_tr_loss.jpg")
 
 class atei(nn.Module):
-    def __init__(self,embd_size,nheads,inp_dim=1024):
+    def __init__(self,embd_size,nheads,inp_dim=1024, dropout=0.4):
         # super(atei,self).__init__()
         super().__init__()
         assert embd_size % nheads == 0, "Embedding size must be divisible by number of heads"
         self.in_proj=nn.Linear(inp_dim,embd_size) # Dynamic projection, Hubert and Wav2Vec2 oup are 1024 dim
-        enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, nhead=nheads,batch_first=True,dim_feedforward=4 * embd_size,dropout=ARGS.dropout)
+        enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, nhead=nheads,batch_first=True,dim_feedforward=4 * embd_size,dropout=dropout)
         self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
 
         self.Cross_Attn=at_cross_attn(embd_size)
 
-        self.dropout=nn.Dropout(ARGS.dropout)
+        self.dropout=nn.Dropout(dropout)
 
         self.fc1=nn.Linear(4*embd_size,embd_size)
         self.fc2=nn.Linear(embd_size,embd_size)
