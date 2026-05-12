@@ -28,13 +28,16 @@ RUN mkdir -p /workspace/weights/stage1 /workspace/weights/stage2
 
 COPY configs /workspace/configs
 COPY scripts /workspace/scripts
-COPY nested_learning /workspace/nested_learning
 COPY src /workspace/src
 COPY Makefile test.py CITATION.cff LICENSE /workspace/
+
+COPY nested_learning /workspace/nested_learning
+RUN uv pip install -e /workspace/nested_learning
+
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 
-CMD ["uv", "run", "src/Inconsistency/models/Stage2Tr_v1.py"]
+CMD ["bash"]

@@ -19,3 +19,15 @@ checkpoints/
 *.pth
 *.ckpt
 *.npz
+
+wandb/
+pretrained_models/
+wav2vec2_checkpoints/
+weights/
+stage1Split.npz
+stage1Weights.pth
+stage2BestWeights.pth
+atei_stage1_weights.pth
+*.jpg
+stage2TestResult.csv
+test.py

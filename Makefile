@@ -4,11 +4,11 @@
 
 # 啟動實驗
 train:
-	uv run scripts/train.py
+	uv run src/Inconsistency/models/Stage2Main_v1.py     --epochs 50     --enc_layers 1     --d_model 128     --dropout 0.5     --atei_dropout 0.4     --weight_decay 1e-2     --lr 1e-3     --lambda_atei 0.0     --alpha_init 0.5     --batch_size 4     --encoder_type hope_attention
 
 # 開啟 WandB 的實驗
 train-wandb:
-	uv run scripts/train.py --wandb
+	uv run src/Inconsistency/models/Stage2Main_v1.py     --epochs 50     --enc_layers 1     --d_model 128     --dropout 0.5     --atei_dropout 0.4     --weight_decay 1e-2     --lr 1e-3     --lambda_atei 0.0     --alpha_init 0.5     --batch_size 4     --encoder_type hope_attention  --wandb_name "Emotion inconsistency - Stage2"
 
 # 靜態檢查 (Ruff)
 lint:

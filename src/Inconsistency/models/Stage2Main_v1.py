@@ -388,7 +388,7 @@ class whole_model(nn.Module):
         if self.encoder_type == "attn":
             HA = self.a_transformer_enc(XA_proj, src_key_padding_mask=aMask)
             HT = self.t_transformer_enc(XT_proj, src_key_padding_mask=tMask)
-        else:  # hope_attention
+        elif self.encoder_type == "hope_attention":  # hope_attention
             if aMask is not None: XA_proj = XA_proj.masked_fill(aMask.unsqueeze(-1), 0.0)
             HA = self.a_encoder(XA_proj)
             if aMask is not None: HA = HA.masked_fill(aMask.unsqueeze(-1), 0.0)
@@ -396,6 +396,7 @@ class whole_model(nn.Module):
             if tMask is not None: XT_proj = XT_proj.masked_fill(tMask.unsqueeze(-1), 0.0)
             HT = self.t_encoder(XT_proj)
             if tMask is not None: HT = HT.masked_fill(tMask.unsqueeze(-1), 0.0)
+        else: raise "encoder_type error(transformer or hope)"
 
         eA = self.masked_mean(HA, aMask)  # [B, D]
         eT = self.masked_mean(HT, tMask)  # [B, D]
@@ -798,5 +799,7 @@ if __name__ == "__main__":
     ALPHA_INIT = ARGS.alpha_init
     PATIENCE = ARGS.patience
     ENCODER_TYPE = ARGS.encoder_type
+
+    print(f"** Use type: {ENCODER_TYPE}**")
 
     main()
