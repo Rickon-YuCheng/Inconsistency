@@ -21,6 +21,7 @@ import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 STAGE1_CKPT = "weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt"
+STAGE1_CKPT = "weights/stage1/stage1_20260513_023333_seed42_f10.6905_ep021_lr5e-05_wd0e+00_d128_l1.pt" # tr split
 D_MODEL=128
 NHEAD=8
 LR=1e-5

@@ -2,6 +2,13 @@
 # uv add transformers uv remove transformers
 .PHONY: main main-wandb lint format clean test check tree tree2
 
+# 裝載特徵
+HF_TOKEN:
+hf download Leopold99/inconsistency-feature \
+  --repo-type dataset \
+  --local-dir /workspace/datasets/Feature \
+  --token "$$HF_TOKEN"
+
 # 啟動實驗
 train:
 	uv run src/Inconsistency/models/Stage2Main_v1.py     --epochs 50     --enc_layers 1     --d_model 128     --dropout 0.5     --atei_dropout 0.4     --weight_decay 1e-2     --lr 1e-3     --lambda_atei 0.0     --alpha_init 0.5     --batch_size 4     --encoder_type hope_attention

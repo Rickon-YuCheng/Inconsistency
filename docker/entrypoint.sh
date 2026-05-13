@@ -33,8 +33,11 @@ echo ""
 echo "[Path check]"
 
 if [ ! -d "/workspace/datasets" ]; then
-    echo "WARNING: /workspace/datasets does not exist."
-    echo "If your code needs datasets/, mount RunPod volume to /workspace or /workspace/datasets."
+    echo "WARNING: /workspace/datasets does not exist. Creating..."
+    mkdir -p /workspace/datasets/Feature/HuBERT
+    mkdir -p /workspace/datasets/Feature/RoBerTa
+    mkdir -p /workspace/weights/stage1
+    mkdir -p /workspace/weights/stage2
 else
     echo "datasets/ found."
 fi

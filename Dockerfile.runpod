@@ -24,15 +24,17 @@ COPY .python-version pyproject.toml uv.lock README.md /workspace/
 RUN uv python install 3.10
 RUN uv sync --frozen
 
-RUN mkdir -p /workspace/weights/stage1 /workspace/weights/stage2
+RUN mkdir -p /workspace/weights/stage1 /workspace/weights/stage2 /workspace/datasets/Feature
 
 COPY configs /workspace/configs
 COPY scripts /workspace/scripts
 COPY src /workspace/src
-COPY Makefile test.py CITATION.cff LICENSE /workspace/
+COPY Makefile CITATION.cff LICENSE /workspace/
+COPY weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt /workspace/weights/stage1/
+COPY PseudoLabel_all_distilbert_zdist_q30_70.npz /workspace/
 
 COPY nested_learning /workspace/nested_learning
-RUN uv pip install -e /workspace/nested_learning
+RUN uv pip install -e /workspace/nested_learning --no-deps
 
 
 COPY docker/entrypoint.sh /entrypoint.sh

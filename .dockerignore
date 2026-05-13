@@ -15,15 +15,12 @@ datasets/
 data/
 checkpoints/
 
-*.pt
 *.pth
 *.ckpt
-*.npz
 
 wandb/
 pretrained_models/
 wav2vec2_checkpoints/
-weights/
 stage1Split.npz
 stage1Weights.pth
 stage2BestWeights.pth

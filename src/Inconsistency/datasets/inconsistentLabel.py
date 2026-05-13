@@ -65,9 +65,11 @@ def get_Split_and_GroundTrue():
         elif 10 <= score <= 24: return 2
         else: raise ValueError(f"Unexpected PHQ8 score: {score}")
 
-    tr = pd.read_csv(TRAIN_CSV)
-    val = pd.read_csv(VAL_CSV)
-    df=pd.concat([tr,val], ignore_index=True)
+    # tr = pd.read_csv(TRAIN_CSV)
+    # val = pd.read_csv(VAL_CSV)
+    # df=pd.concat([tr,val], ignore_index=True)
+    df = pd.read_csv(TRAIN_CSV)
+
     depMap = {} # Dict: tr + test, [id: gt_label]
 
     for _, row in df.iterrows():
@@ -79,8 +81,8 @@ def get_Split_and_GroundTrue():
     patient_df = patient_df.copy()
     patient_df["label"] = patient_df["PHQ8_Score"].apply(score_to_label)
     # 7:2:1
-    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=42,stratify=patient_df["label"])
-    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=42,stratify=tr_val_df["label"])
+    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=24,stratify=patient_df["label"])
+    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=24,stratify=tr_val_df["label"])
 
     train_idx = tr_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
     val_idx = val_df["Participant_ID"].astype(int).tolist()
@@ -365,4 +367,4 @@ if __name__ == "__main__":
     audioPreprosessing(**vars(args))
     WAV2VEC2(**vars(args))
 
-    # HOWNET(**vars(args))
+    HOWNET(**vars(args))
