@@ -65,10 +65,10 @@ def get_Split_and_GroundTrue():
         elif 10 <= score <= 24: return 2
         else: raise ValueError(f"Unexpected PHQ8 score: {score}")
 
-    # tr = pd.read_csv(TRAIN_CSV)
-    # val = pd.read_csv(VAL_CSV)
-    # df=pd.concat([tr,val], ignore_index=True)
-    df = pd.read_csv(TRAIN_CSV)
+    tr = pd.read_csv(TRAIN_CSV)
+    val = pd.read_csv(VAL_CSV)
+    df=pd.concat([tr,val], ignore_index=True)
+    # df = pd.read_csv(TRAIN_CSV)
 
     depMap = {} # Dict: tr + test, [id: gt_label]
 

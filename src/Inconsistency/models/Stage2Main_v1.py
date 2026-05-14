@@ -2,6 +2,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, Subset
 from collections import Counter
 import torch
+from sklearn.model_selection import StratifiedKFold
 from Stage1Tr_v1 import atei
 from hope_adapter import HopeEncoderBlock
 from torch.nn.utils.rnn import pad_sequence
@@ -20,8 +21,11 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-STAGE1_CKPT = "weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt"
-STAGE1_CKPT = "weights/stage1/stage1_20260513_023333_seed42_f10.6905_ep021_lr5e-05_wd0e+00_d128_l1.pt" # tr split
+# STAGE1_CKPT = "weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt"
+# STAGE1_CKPT = "weights/stage1/stage1_20260513_023333_seed42_f10.6905_ep021_lr5e-05_wd0e+00_d128_l1.pt" # tr split
+# STAGE1_CKPT = "weights/stage1/stage1_20260513_082404_seed42_f10.7018_ep025_lr1e-04_wd1e-04_d64_l1.pt"
+# STAGE1_CKPT = "weights/stage1/stage1_20260513_174400_seed42_f10.7018_ep032_lr1e-04_wd1e-04_d32_l1.pt"
+STAGE1_CKPT = "weights/stage1/stage1_20260514_052912_seed42_f10.7059_ep043_lr1e-04_wd1e-04_d256_l1.pt"
 D_MODEL=128
 NHEAD=8
 LR=1e-5
@@ -70,280 +74,361 @@ def parse_args():
     parser.add_argument("--cms_hidden_multiplier",type=int,default=CMS_HIDDEN_MULTIPLIER,)
 
     parser.add_argument("--batch_size", type=int, default=2, help="batch size for DataLoader")
+    parser.add_argument("--kfold", type=int, default=0)
 
     return parser.parse_args()
 
+def build_kfold_splits(n_splits=5, seed=42):
+    depMap, train_Idx, val_Idx, test_Idx = get_Split_and_GroundTrue()
+
+    # 只對 train + val 做 kfold
+    patient_ids = train_Idx + val_Idx
+
+    labels = [depMap[p] for p in patient_ids]
+
+    skf = StratifiedKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=seed
+    )
+
+    splits = []
+
+    for fold_idx, (tr_idx, val_idx) in enumerate(skf.split(patient_ids, labels)):
+        tr_patients = [patient_ids[i] for i in tr_idx]
+        val_patients = [patient_ids[i] for i in val_idx]
+
+        splits.append({
+            "fold": fold_idx,
+            "train": tr_patients,
+            "val": val_patients,
+        })
+
+    return splits
+
 def main():
-    set_seed(ARGS.seed)
+    
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    run_name = ARGS.wandb_name
-    if run_name is None:
-        run_name = (
-            f"stage2_"
-            f"seed{ARGS.seed}_"
-            f"lr{LR:.0e}_"
-            f"wd{ARGS.weight_decay:.0e}_"
-            f"do{ARGS.dropout:.2f}_"
-            f"la{LAMBDA_ATEI:.2f}_"
-            f"a{ALPHA_INIT:.2f}_"
-            f"d{D_MODEL}_"
-            f"l{TRANSFORMER_ENC_LAYERS}_"
-            f"enc{ARGS.encoder_type}_"
-            f"{run_id}"
-        )
-
     total_timer = Timer()
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     save_dir = Path(ARGS.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    if ARGS.use_wandb:
-        wandb.init(
-            project=ARGS.wandb_project,
-            name=run_name,
-            config={
-                "seed": ARGS.seed,
-
-                "d_model": D_MODEL,
-                "nhead": NHEAD,
-                "lr": LR,
-                "epochs": EPOCHS,
-                "enc_layers": TRANSFORMER_ENC_LAYERS,
-
-                "dropout": ARGS.dropout,
-                "atei_dropout": ARGS.atei_dropout,
-                "weight_decay": ARGS.weight_decay,
-
-                "lambda_atei": LAMBDA_ATEI,
-                "alpha_init": ALPHA_INIT,
-                "patience": PATIENCE,
-
-                "loss_total": "LAMBDA_ATEI * L_Atei + L_Depression",
-                "dep_class_weights": None,
-
-                "stage1_ckpt": ARGS.stage1_ckpt,
-            },
-            save_code=True,
-        )
-
-    g = torch.Generator()
-    g.manual_seed(ARGS.seed)
-
-    best_val_f1 = -1.0
-    bad_epochs = 0
-
-    
-    # 1. Dataset
-    # trDS=stage2_dataset(fold="tr")
-    # tr_loader=DataLoader(trDS,collate_fn=stage2_collate_fn, shuffle=True,generator=g,worker_init_fn=numpy_random_init)
-    # tr_loader=DataLoader(trDS,collate_fn=collate_fn)
-    # gpt
-    from torch.utils.data import Subset
-
-    trDS = stage2_dataset(fold="tr")
-    sampler = build_stage2_dep_balanced_sampler(trDS, seed=ARGS.seed)
-
-    tr_loader = DataLoader(
-        trDS,
-        collate_fn=stage2_collate_fn,
-        batch_size=ARGS.batch_size,
-        sampler=sampler,   # 使用完整 dataset 的 pseudo-label resample
-        worker_init_fn=numpy_random_init,
-    )
-    # 只取前 10 個病人快速測試
-    # trDS_full = stage2_dataset(fold="tr")
-    # trDS = Subset(trDS_full, list(range(10)))
-
-    # tr_loader = DataLoader(
-    #     trDS,   # ✅ 這裡用 Subset
-    #     collate_fn=stage2_collate_fn,
-    #     shuffle=False,    # 快速測試不用 sampler
-    #     worker_init_fn=numpy_random_init,
-    # )
-    # ===
-    valDS=stage2_dataset(fold="val")
-    val_loader=DataLoader(valDS,collate_fn=stage2_collate_fn, shuffle=False,batch_size=1, worker_init_fn=numpy_random_init)
-    if ARGS.use_wandb:
-        wandb.config.update({
-            "train_samples": len(trDS),
-            "val_samples": len(valDS),
-        })
 
 
-    # 2. Model parameter setting
-    model=whole_model(D_MODEL,NHEAD).to(device)
-    # opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
-    atei_params = list(model.atei.parameters())
-    other_params = [
-        p for name, p in model.named_parameters()
-        if not name.startswith("atei.")
-    ]
-
-    opt = torch.optim.Adam(
-        [
-            {"params": atei_params, "lr": LR * 0.1},
-            {"params": other_params, "lr": LR},
-        ],
-        weight_decay=ARGS.weight_decay,
-    )
-    scaler = torch.GradScaler('cuda')
-    
-
-    # gpt
-    from collections import Counter
-    # dep_counter = Counter([int(x[2]) for x in trDS.ds])
-    # atei_counter = Counter([int(x[1]) for x in trDS.ds])
-    if isinstance(trDS, torch.utils.data.Subset):
-        train_ds_records = [trDS.dataset.ds[i] for i in trDS.indices]
+    # g = torch.Generator()
+    # g.manual_seed(ARGS.seed)
+    if ARGS.kfold <= 1:
+        splits = [{
+            "fold": 0,
+            "train": None,
+            "val": None,
+        }]
     else:
-        train_ds_records = trDS.ds
-
-    dep_counter = Counter([int(x[2]) for x in train_ds_records])
-    atei_counter = Counter([int(x[1]) for x in train_ds_records])
-    # weights = torch.tensor([1.0, 1.3, 1.3], dtype=torch.float).to(device)
-    # weights = None
-    total = sum(dep_counter.values())
-    n_classes = 3
-    weights = torch.tensor([
-        total / (n_classes * dep_counter[i]) for i in range(n_classes)
-    ], dtype=torch.float, device=device)
-
-    print("Train dep dist:", dep_counter)
-    print("Train ATEI dist:", atei_counter)
-    print("Class weights:", weights)
-
-    val_dep_counter = Counter([int(x[2]) for x in valDS.ds])
-    val_atei_counter = Counter([int(x[1]) for x in valDS.ds])
-
-    print("Val dep dist:", val_dep_counter)
-    print("Val ATEI dist:", val_atei_counter)
-
-    loss_atei = nn.CrossEntropyLoss()
-    # loss_dep = nn.CrossEntropyLoss()
-    loss_dep = nn.CrossEntropyLoss(weight=weights)
-    # ====
-
-
-
-
-    # 3. Train
-    for epoch in range(1,EPOCHS+1):
-        print("=" * 80)
-        print(f"Epoch [{epoch}/{EPOCHS}]")
-
-        tr_result=train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, epoch, EPOCHS,scaler)
-        val_result=val(model, val_loader, loss_dep, device, epoch, EPOCHS)
-
-
-        print(
-            f"[Train] "
-            f"ATEI Loss: {tr_result['atei_loss']:.4f} | "
-            f"Dep Loss: {tr_result['dep_loss']:.4f} | "
-            f"Total Loss: {tr_result['tot_loss']:.4f} | "
-            f"ATEI Acc: {tr_result['cur_atei_acc']:.4f} | "
-            f"Dep Acc: {tr_result['cur_dep_acc']:.4f}"
-        )
-
-        print(
-            f"[Val] "
-            f"Dep Loss: {val_result['dep_loss']:.4f} | "
-            f"Acc: {val_result['acc']:.4f} | "
-            f"Pre: {val_result['pre']:.4f} | "
-            f"Rec: {val_result['rec']:.4f} | "
-            f"F1: {val_result['f1']:.4f}"
+        splits = build_kfold_splits(
+            n_splits=ARGS.kfold,
+            seed=ARGS.seed
         )
 
 
+    all_fold_results = []
 
+    
 
-        if val_result["f1"] > best_val_f1:
-            best_val_f1 = val_result["f1"]
-            bad_epochs = 0
+    for split in splits:
+        fold_id = split["fold"]
 
-            ckpt_name = (
+        set_seed(ARGS.seed+fold_id)
+
+        if ARGS.wandb_name is not None:
+            run_name = f"{ARGS.wandb_name}_fold{fold_id}"
+        else:
+            run_name = (
                 f"stage2_"
-                f"{run_id}_"
                 f"seed{ARGS.seed}_"
-                f"f1{best_val_f1:.4f}_"
-                f"ep{epoch:03d}_"
                 f"lr{LR:.0e}_"
                 f"wd{ARGS.weight_decay:.0e}_"
+                f"do{ARGS.dropout:.2f}_"
+                f"la{LAMBDA_ATEI:.2f}_"
+                f"a{ALPHA_INIT:.2f}_"
                 f"d{D_MODEL}_"
-                f"l{TRANSFORMER_ENC_LAYERS}.pt"
+                f"l{TRANSFORMER_ENC_LAYERS}_"
+                f"enc{ARGS.encoder_type}_"
+                f"{run_id}"
             )
 
-            ckpt_path = save_dir / ckpt_name
-
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "epoch": epoch,
-                    "best_val_f1": best_val_f1,
-                    "val_acc": val_result["acc"],
-                    "val_pre": val_result["pre"],
-                    "val_rec": val_result["rec"],
-                    "val_f1": val_result["f1"],
-                    "val_dep_loss": val_result["dep_loss"],
-
-                    "args": vars(ARGS),
+        if ARGS.use_wandb:
+            wandb.init(
+                project=ARGS.wandb_project,
+                name=run_name,
+                config={
+                    "seed": ARGS.seed,
 
                     "d_model": D_MODEL,
                     "nhead": NHEAD,
+                    "lr": LR,
+                    "epochs": EPOCHS,
                     "enc_layers": TRANSFORMER_ENC_LAYERS,
-                    # "lr": LR,
-                    "base_lr": LR,
-                    "atei_lr": opt.param_groups[0]["lr"],
-                    "other_lr": opt.param_groups[1]["lr"],
-                    "weight_decay": ARGS.weight_decay,
+
                     "dropout": ARGS.dropout,
                     "atei_dropout": ARGS.atei_dropout,
+                    "weight_decay": ARGS.weight_decay,
+
                     "lambda_atei": LAMBDA_ATEI,
                     "alpha_init": ALPHA_INIT,
+                    "patience": PATIENCE,
+
+                    "loss_total": "LAMBDA_ATEI * L_Atei + L_Depression",
+                    "dep_class_weights": None,
 
                     "stage1_ckpt": ARGS.stage1_ckpt,
                 },
-                ckpt_path,
+                save_code=True,
             )
 
-            if ARGS.use_wandb:
-                wandb.run.summary["best_val_f1"] = best_val_f1
 
-            print(f"[Save Best] Val F1: {best_val_f1:.4f} -> {ckpt_path}")
+
+        print("\n" + "="*100)
+        print(f"FOLD {fold_id}")
+        print("="*100)
+        best_val_f1 = -1.0
+        bad_epochs = 0
+
+        # 1. Dataset
+        # trDS=stage2_dataset(fold="tr")
+        # tr_loader=DataLoader(trDS,collate_fn=stage2_collate_fn, shuffle=True,generator=g,worker_init_fn=numpy_random_init)
+        # tr_loader=DataLoader(trDS,collate_fn=collate_fn)
+        # gpt
+        from torch.utils.data import Subset
+        if split["train"] is None:
+            trDS = stage2_dataset(fold="tr")
+            valDS = stage2_dataset(fold="val")
         else:
-            bad_epochs += 1
-            print(f"[EarlyStop] bad_epochs: {bad_epochs}/{PATIENCE}")
+            trDS = stage2_dataset(fold="tr", cv_split=split)
+            valDS = stage2_dataset(fold="val", cv_split=split)
 
+        # trDS = stage2_dataset(fold="tr", cv_split=split)
+        # valDS = stage2_dataset(fold="val", cv_split=split)
+        # trDS = stage2_dataset(fold="tr")
+        sampler = build_stage2_dep_balanced_sampler(trDS, seed=ARGS.seed)
+
+
+
+        tr_loader = DataLoader(
+            trDS,
+            collate_fn=stage2_collate_fn,
+            batch_size=ARGS.batch_size,
+            sampler=sampler,   # 使用完整 dataset 的 pseudo-label resample
+            worker_init_fn=numpy_random_init,
+        )
+        # 只取前 10 個病人快速測試
+        # trDS_full = stage2_dataset(fold="tr")
+        # trDS = Subset(trDS_full, list(range(10)))
+
+        # tr_loader = DataLoader(
+        #     trDS,   # ✅ 這裡用 Subset
+        #     collate_fn=stage2_collate_fn,
+        #     shuffle=False,    # 快速測試不用 sampler
+        #     worker_init_fn=numpy_random_init,
+        # )
+        # ===
+        val_loader=DataLoader(valDS,collate_fn=stage2_collate_fn, shuffle=False,batch_size=1, worker_init_fn=numpy_random_init)
+        if ARGS.use_wandb:
+            wandb.config.update({
+                "train_samples": len(trDS),
+                "val_samples": len(valDS),
+            })
+
+
+        # 2. Model parameter setting
+        model=whole_model(D_MODEL,NHEAD).to(device)
+        # opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
+        atei_params = list(model.atei.parameters())
+        other_params = [
+            p for name, p in model.named_parameters()
+            if not name.startswith("atei.")
+        ]
+
+        opt = torch.optim.Adam(
+            [
+                {"params": atei_params, "lr": LR * 0.1},
+                {"params": other_params, "lr": LR},
+            ],
+            weight_decay=ARGS.weight_decay,
+        )
+        scaler = torch.GradScaler('cuda')
+        
+
+        # gpt
+        from collections import Counter
+        # dep_counter = Counter([int(x[2]) for x in trDS.ds])
+        # atei_counter = Counter([int(x[1]) for x in trDS.ds])
+        if isinstance(trDS, torch.utils.data.Subset):
+            train_ds_records = [trDS.dataset.ds[i] for i in trDS.indices]
+        else:
+            train_ds_records = trDS.ds
+
+        dep_counter = Counter([int(x[2]) for x in train_ds_records])
+        atei_counter = Counter([int(x[1]) for x in train_ds_records])
+        # weights = torch.tensor([1.0, 1.3, 1.3], dtype=torch.float).to(device)
+        # weights = None
+        total = sum(dep_counter.values())
+        n_classes = 3
+        weights = torch.tensor([
+            total / (n_classes * dep_counter[i]) for i in range(n_classes)
+        ], dtype=torch.float, device=device)
+
+        print("Train dep dist:", dep_counter)
+        print("Train ATEI dist:", atei_counter)
+        print("Class weights:", weights)
+
+        val_dep_counter = Counter([int(x[2]) for x in valDS.ds])
+        val_atei_counter = Counter([int(x[1]) for x in valDS.ds])
+
+        print("Val dep dist:", val_dep_counter)
+        print("Val ATEI dist:", val_atei_counter)
+
+        loss_atei = nn.CrossEntropyLoss()
+        loss_dep = nn.CrossEntropyLoss()
+        # loss_dep = nn.CrossEntropyLoss(weight=weights)
+        # ====
+
+
+
+
+        # 3. Train
+        for epoch in range(1,EPOCHS+1):
+            print("=" * 80)
+            print(f"Epoch [{epoch}/{EPOCHS}]")
+
+            tr_result=train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, epoch, EPOCHS,scaler)
+            val_result=val(model, val_loader, loss_dep, device, epoch, EPOCHS)
+
+
+            print(
+                f"[Train] "
+                f"ATEI Loss: {tr_result['atei_loss']:.4f} | "
+                f"Dep Loss: {tr_result['dep_loss']:.4f} | "
+                f"Total Loss: {tr_result['tot_loss']:.4f} | "
+                f"ATEI Acc: {tr_result['cur_atei_acc']:.4f} | "
+                f"Dep Acc: {tr_result['cur_dep_acc']:.4f}"
+            )
+
+            print(
+                f"[Val] "
+                f"Dep Loss: {val_result['dep_loss']:.4f} | "
+                f"Acc: {val_result['acc']:.4f} | "
+                f"Pre: {val_result['pre']:.4f} | "
+                f"Rec: {val_result['rec']:.4f} | "
+                f"F1: {val_result['f1']:.4f}"
+            )
+
+
+
+
+            if val_result["f1"] > best_val_f1:
+                best_val_f1 = val_result["f1"]
+                bad_epochs = 0
+
+                ckpt_name = (
+                    f"stage2_"
+                    f"{run_id}_"
+                    f"seed{ARGS.seed}_"
+                    f"f1{best_val_f1:.4f}_"
+                    f"ep{epoch:03d}_"
+                    f"lr{LR:.0e}_"
+                    f"wd{ARGS.weight_decay:.0e}_"
+                    f"d{D_MODEL}_"
+                    f"l{TRANSFORMER_ENC_LAYERS}.pt"
+                )
+
+                ckpt_path = save_dir / ckpt_name
+
+                torch.save(
+                    {
+                        "model_state_dict": model.state_dict(),
+                        "epoch": epoch,
+                        "best_val_f1": best_val_f1,
+                        "val_acc": val_result["acc"],
+                        "val_pre": val_result["pre"],
+                        "val_rec": val_result["rec"],
+                        "val_f1": val_result["f1"],
+                        "val_dep_loss": val_result["dep_loss"],
+
+                        "args": vars(ARGS),
+
+                        "d_model": D_MODEL,
+                        "nhead": NHEAD,
+                        "enc_layers": TRANSFORMER_ENC_LAYERS,
+                        # "lr": LR,
+                        "base_lr": LR,
+                        "atei_lr": opt.param_groups[0]["lr"],
+                        "other_lr": opt.param_groups[1]["lr"],
+                        "weight_decay": ARGS.weight_decay,
+                        "dropout": ARGS.dropout,
+                        "atei_dropout": ARGS.atei_dropout,
+                        "lambda_atei": LAMBDA_ATEI,
+                        "alpha_init": ALPHA_INIT,
+
+                        "stage1_ckpt": ARGS.stage1_ckpt,
+                    },
+                    ckpt_path,
+                )
+
+                if ARGS.use_wandb:
+                    wandb.run.summary["best_val_f1"] = best_val_f1
+
+                print(f"[Save Best] Val F1: {best_val_f1:.4f} -> {ckpt_path}")
+            else:
+                bad_epochs += 1
+                print(f"[EarlyStop] bad_epochs: {bad_epochs}/{PATIENCE}")
+
+
+            if ARGS.use_wandb:
+                wandb.log({
+                    "epoch": epoch,
+
+                    "train/atei_loss": tr_result["atei_loss"],
+                    "train/dep_loss": tr_result["dep_loss"],
+                    "train/tot_loss": tr_result["tot_loss"],
+                    "train/atei_acc": tr_result["cur_atei_acc"],
+                    "train/dep_acc": tr_result["cur_dep_acc"],
+
+                    "val/dep_loss": val_result["dep_loss"],
+                    "val/acc": val_result["acc"],
+                    "val/pre": val_result["pre"],
+                    "val/rec": val_result["rec"],
+                    "val/f1": val_result["f1"],
+
+                    "best/val_f1": best_val_f1,
+                    "no_improve": bad_epochs,
+                    "lr/atei": opt.param_groups[0]["lr"],
+                    "lr/other": opt.param_groups[1]["lr"],
+                    # "lr": opt.param_groups[0]["lr"],
+                })
+            if bad_epochs >= PATIENCE:
+                print(f"[EarlyStop] Stop at epoch {epoch}, best val F1: {best_val_f1:.4f}")
+                break
+
+        print(f"Total time: {total_timer}")
+        all_fold_results.append(best_val_f1)
+
+        print(f"\nFold {fold_id} Best F1: {best_val_f1:.4f}")
+        print(f"Current Mean F1: {np.mean(all_fold_results):.4f}")
 
         if ARGS.use_wandb:
-            wandb.log({
-                "epoch": epoch,
+            wandb.finish()
 
-                "train/atei_loss": tr_result["atei_loss"],
-                "train/dep_loss": tr_result["dep_loss"],
-                "train/tot_loss": tr_result["tot_loss"],
-                "train/atei_acc": tr_result["cur_atei_acc"],
-                "train/dep_acc": tr_result["cur_dep_acc"],
+    print("\n" + "="*100)
+    print("K-FOLD RESULT")
+    print("="*100)
 
-                "val/dep_loss": val_result["dep_loss"],
-                "val/acc": val_result["acc"],
-                "val/pre": val_result["pre"],
-                "val/rec": val_result["rec"],
-                "val/f1": val_result["f1"],
+    for i, f1 in enumerate(all_fold_results):
+        print(f"Fold {i}: {f1:.4f}")
 
-                "best/val_f1": best_val_f1,
-                "no_improve": bad_epochs,
-                "lr/atei": opt.param_groups[0]["lr"],
-                "lr/other": opt.param_groups[1]["lr"],
-                # "lr": opt.param_groups[0]["lr"],
-            })
-        if bad_epochs >= PATIENCE:
-            print(f"[EarlyStop] Stop at epoch {epoch}, best val F1: {best_val_f1:.4f}")
-            break
+    print(f"\nMean F1: {np.mean(all_fold_results):.4f}")
+    print(f"Std  F1: {np.std(all_fold_results):.4f}")
 
-    print(f"Total time: {total_timer}")
 
-    if ARGS.use_wandb:
-        wandb.finish()
 
 
 class whole_model(nn.Module):
@@ -366,12 +451,13 @@ class whole_model(nn.Module):
             self.a_transformer_enc=nn.TransformerEncoder(a_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
             self.t_transformer_enc=nn.TransformerEncoder(t_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
         elif self.encoder_type == "hope_attention":
-            self.a_encoder = HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,)
-            self.t_encoder = HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,)
+            self.a_encoder = nn.ModuleList([HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,) for _ in range(TRANSFORMER_ENC_LAYERS)])
+            self.t_encoder = nn.ModuleList([HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,) for _ in range(TRANSFORMER_ENC_LAYERS)])
         else:
             raise ValueError(f"Unknown encoder_type: {self.encoder_type}")
         self.dropout=nn.Dropout(ARGS.dropout)
-        self.fc1=nn.Linear(3*embd_size,embd_size)
+        # self.fc1=nn.Linear(3*embd_size,embd_size)
+        self.fc1=nn.Linear(embd_size,embd_size) # only t
         self.fc2=nn.Linear(embd_size,embd_size)
         self.fc3=nn.Linear(embd_size, embd_size)
         # self.alpha = nn.Parameter(torch.ones(embd_size)*ALPHA_INIT)
@@ -391,11 +477,17 @@ class whole_model(nn.Module):
             HT = self.t_transformer_enc(XT_proj, src_key_padding_mask=tMask)
         elif self.encoder_type == "hope_attention":  # hope_attention
             if aMask is not None: XA_proj = XA_proj.masked_fill(aMask.unsqueeze(-1), 0.0)
-            HA = self.a_encoder(XA_proj)
-            if aMask is not None: HA = HA.masked_fill(aMask.unsqueeze(-1), 0.0)
 
+            HA = XA_proj
+            for layer in self.a_encoder: HA = layer(HA)
+
+            if aMask is not None: HA = HA.masked_fill(aMask.unsqueeze(-1), 0.0)
             if tMask is not None: XT_proj = XT_proj.masked_fill(tMask.unsqueeze(-1), 0.0)
-            HT = self.t_encoder(XT_proj)
+
+            HT = XT_proj
+            for layer in self.t_encoder:
+                HT = layer(HT)
+
             if tMask is not None: HT = HT.masked_fill(tMask.unsqueeze(-1), 0.0)
         else: raise "encoder_type error(transformer or hope)"
 
@@ -430,14 +522,16 @@ class whole_model(nn.Module):
         # ---------- Scaling ----------
         # alpha_norm = torch.softmax(self.alpha, dim=0)
         # eE = eE * alpha_norm.unsqueeze(0)
-        eE=eE*self.alpha
+        alpha=torch.clamp(self.alpha,0.0,2.0)
+        eE=eE*alpha
 
         # print(f"eA norm: {eA.norm(dim=-1).mean().item():.4f}")
         # print(f"eT norm: {eT.norm(dim=-1).mean().item():.4f}")
         # print(f"eE norm: {eE.norm(dim=-1).mean().item():.4f}")
 
         # ---------- Stage4: Fusion ----------
-        eFusion = torch.cat((eA, eE, eT), dim=1)       # [B, 3D]
+        # eFusion = torch.cat((eA, eE, eT), dim=1)       # [B, 3D]
+        eFusion=eT
         Fc1 = self.dropout(F.relu(self.fc1(eFusion)))
         Fc2 = self.dropout(F.relu(self.fc2(Fc1)))
         Fc3 = self.dropout(F.relu(self.fc3(Fc2)))
@@ -487,6 +581,11 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
             # L_Depression = loss_dep(patient_dep.unsqueeze(0), dep_label.unsqueeze(0)) # 加batch
             L_Atei = loss_atei(atei_logits, atei_label)   # [B, 2], [B]
             L_Depression = loss_dep(dep_logits, dep_label) # [B, 3], [B]
+            if cur_epoch < 30:
+                LAMBDA_ATEI = 0.05
+            else:
+                progress = (cur_epoch - 30) / (EPOCHS - 30)
+                LAMBDA_ATEI = 0.05 + (0.3 - 0.05) * progress
             L_Total=LAMBDA_ATEI*L_Atei+L_Depression
             # ===
 
@@ -621,7 +720,7 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
 
 
 class stage2_dataset(Dataset):
-    def __init__(self, fold: str = "tr"):
+    def __init__(self, fold: str = "tr", cv_split=None):
         self.ds = []
 
         a_root = Path("datasets/Feature/HuBERT")
@@ -629,14 +728,21 @@ class stage2_dataset(Dataset):
 
         depMap, train_Idx, val_Idx, test_Idx = get_Split_and_GroundTrue()
 
-        if fold == "tr":
-            patient_Idx = train_Idx
-        elif fold == "val":
-            patient_Idx = val_Idx
-        elif fold == "test":
-            patient_Idx = test_Idx
+        if cv_split is not None:
+            if fold == "tr":
+                patient_Idx = cv_split["train"]
+            elif fold == "val":
+                patient_Idx = cv_split["val"]
+            elif fold == "test":
+                patient_Idx = cv_split["test"]
         else:
-            raise Exception("fold error")
+            if fold == "tr":
+                patient_Idx = train_Idx
+            elif fold == "val":
+                patient_Idx = val_Idx
+            elif fold == "test":
+                patient_Idx = test_Idx
+
 
         PseudoLabel = np.load("PseudoLabel_all_distilbert_zdist_q30_70.npz")
         patientIdx = PseudoLabel["patientIdx"]
