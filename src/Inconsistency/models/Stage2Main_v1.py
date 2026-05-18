@@ -18,14 +18,19 @@ from torch.utils.checkpoint import checkpoint
 from Inconsistency.datasets.inconsistentLabel import get_Split_and_GroundTrue
 from pathlib import Path
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import time
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+import torch.multiprocessing as mp
+mp.set_sharing_strategy('file_system')
 
 # STAGE1_CKPT = "weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt"
 # STAGE1_CKPT = "weights/stage1/stage1_20260513_023333_seed42_f10.6905_ep021_lr5e-05_wd0e+00_d128_l1.pt" # tr split
 # STAGE1_CKPT = "weights/stage1/stage1_20260513_082404_seed42_f10.7018_ep025_lr1e-04_wd1e-04_d64_l1.pt"
 # STAGE1_CKPT = "weights/stage1/stage1_20260513_174400_seed42_f10.7018_ep032_lr1e-04_wd1e-04_d32_l1.pt"
-STAGE1_CKPT = "weights/stage1/stage1_20260514_052912_seed42_f10.7059_ep043_lr1e-04_wd1e-04_d256_l1.pt"
+# STAGE1_CKPT = "weights/stage1/stage1_20260514_052912_seed42_f10.7059_ep043_lr1e-04_wd1e-04_d256_l1.pt"
+# === new ver ckpt ===
+STAGE1_CKPT = "weights/stage1/stage1_20260517_102119_seed42_f10.7059_ep046_lr1e-04_wd1e-04_d256_l1.pt"
 D_MODEL=128
 NHEAD=8
 LR=1e-5
@@ -201,37 +206,30 @@ def main():
         from torch.utils.data import Subset
         if split["train"] is None:
             trDS = stage2_dataset(fold="tr")
+            # trDS = Subset(trDS, list(range(10)))
             valDS = stage2_dataset(fold="val")
         else:
             trDS = stage2_dataset(fold="tr", cv_split=split)
+            # trDS = Subset(trDS, list(range(10)))
             valDS = stage2_dataset(fold="val", cv_split=split)
 
-        # trDS = stage2_dataset(fold="tr", cv_split=split)
-        # valDS = stage2_dataset(fold="val", cv_split=split)
-        # trDS = stage2_dataset(fold="tr")
-        sampler = build_stage2_dep_balanced_sampler(trDS, seed=ARGS.seed)
+        
 
+        # sampler = build_stage2_dep_balanced_sampler(trDS, seed=ARGS.seed)
 
 
         tr_loader = DataLoader(
             trDS,
             collate_fn=stage2_collate_fn,
             batch_size=ARGS.batch_size,
-            sampler=sampler,   # 使用完整 dataset 的 pseudo-label resample
+            # sampler=sampler,   # 使用完整 dataset 的 pseudo-label resample
+            shuffle=True,
             worker_init_fn=numpy_random_init,
+            num_workers=0,             # ← 加這個
+            pin_memory=True,           # ← 加這個
+            # persistent_workers=True,
         )
-        # 只取前 10 個病人快速測試
-        # trDS_full = stage2_dataset(fold="tr")
-        # trDS = Subset(trDS_full, list(range(10)))
-
-        # tr_loader = DataLoader(
-        #     trDS,   # ✅ 這裡用 Subset
-        #     collate_fn=stage2_collate_fn,
-        #     shuffle=False,    # 快速測試不用 sampler
-        #     worker_init_fn=numpy_random_init,
-        # )
-        # ===
-        val_loader=DataLoader(valDS,collate_fn=stage2_collate_fn, shuffle=False,batch_size=1, worker_init_fn=numpy_random_init)
+        val_loader=DataLoader(valDS,collate_fn=stage2_collate_fn, shuffle=False,batch_size=1, worker_init_fn=numpy_random_init,num_workers=0,pin_memory=True)
         if ARGS.use_wandb:
             wandb.config.update({
                 "train_samples": len(trDS),
@@ -241,12 +239,23 @@ def main():
 
         # 2. Model parameter setting
         model=whole_model(D_MODEL,NHEAD).to(device)
+        # print(model) # debug
+        print("*"*10)
+
+        # for p in model.a_transformer_enc.parameters(): 
+        #     p.requires_grad = False 
+        # for p in model.atei.parameters(): 
+        #     p.requires_grad = False
+
+
+
         # opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
         atei_params = list(model.atei.parameters())
         other_params = [
             p for name, p in model.named_parameters()
             if not name.startswith("atei.")
         ]
+
 
         opt = torch.optim.Adam(
             [
@@ -288,8 +297,8 @@ def main():
         print("Val ATEI dist:", val_atei_counter)
 
         loss_atei = nn.CrossEntropyLoss()
-        loss_dep = nn.CrossEntropyLoss()
-        # loss_dep = nn.CrossEntropyLoss(weight=weights)
+        # loss_dep = nn.CrossEntropyLoss()
+        loss_dep = nn.CrossEntropyLoss(weight=weights)
         # ====
 
 
@@ -437,8 +446,9 @@ class whole_model(nn.Module):
     '''
     def __init__(self,embd_size=D_MODEL,nheads=NHEAD):
         super().__init__()
-        self.in_proj=nn.Linear(1024, embd_size) # Because HuBERT and Wav2Vec2 oup are 1024 dim
-        self.atei=atei(embd_size=embd_size,nheads=nheads, dropout=ARGS.atei_dropout)
+        self.a_in_proj=nn.Sequential(nn.Linear(1024, embd_size),nn.LayerNorm(embd_size)) # Because HuBERT and Wav2Vec2 oup are 1024 dim
+        self.t_in_proj=nn.Sequential(nn.Linear(1024, embd_size),nn.LayerNorm(embd_size)) # Because HuBERT and Wav2Vec2 oup are 1024 dim
+        self.atei=atei(embd_size=256,nheads=nheads, dropout=ARGS.atei_dropout,TRANSFORMER_ENC_LAYERS=1)
         ckpt = torch.load(ARGS.stage1_ckpt, map_location="cpu")
         self.atei.load_state_dict(ckpt["model_state_dict"])
         # self.atei.load_state_dict(torch.load("stage1Weights.pth"))
@@ -446,18 +456,19 @@ class whole_model(nn.Module):
         #     p.requires_grad = False
         self.encoder_type = ARGS.encoder_type
         if self.encoder_type == "attn":
-            a_enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, dropout=ARGS.dropout, dim_feedforward=4*embd_size, nhead=nheads,batch_first=True) # # (N, T, E)
-            t_enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, dropout=ARGS.dropout, dim_feedforward=4*embd_size, nhead=nheads,batch_first=True) # # (N, T, E)
-            self.a_transformer_enc=nn.TransformerEncoder(a_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
-            self.t_transformer_enc=nn.TransformerEncoder(t_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
+            a_enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, dropout=ARGS.dropout, dim_feedforward=4*embd_size, nhead=nheads,batch_first=True, norm_first=True,) # # (N, T, E)
+            t_enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, dropout=ARGS.dropout, dim_feedforward=4*embd_size, nhead=nheads,batch_first=True, norm_first=True,) # # (N, T, E)
+            self.a_transformer_enc=nn.TransformerEncoder(a_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS,enable_nested_tensor=False) #12
+            self.t_transformer_enc=nn.TransformerEncoder(t_enc_layer,num_layers=TRANSFORMER_ENC_LAYERS,enable_nested_tensor=False) #12
         elif self.encoder_type == "hope_attention":
             self.a_encoder = nn.ModuleList([HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,) for _ in range(TRANSFORMER_ENC_LAYERS)])
             self.t_encoder = nn.ModuleList([HopeEncoderBlock(dim=embd_size,heads=nheads,variant="hope_attention",cms_periods=tuple(ARGS.cms_periods),hidden_multiplier=ARGS.cms_hidden_multiplier,cms_online_updates=CMS_ONLINE_UPDATES,) for _ in range(TRANSFORMER_ENC_LAYERS)])
         else:
             raise ValueError(f"Unknown encoder_type: {self.encoder_type}")
+        self.atei_proj = nn.Linear(256, embd_size)
         self.dropout=nn.Dropout(ARGS.dropout)
-        # self.fc1=nn.Linear(3*embd_size,embd_size)
-        self.fc1=nn.Linear(embd_size,embd_size) # only t
+        self.fc1=nn.Linear(3*embd_size,embd_size)
+        # self.fc1=nn.Linear(embd_size,embd_size) # only t
         self.fc2=nn.Linear(embd_size,embd_size)
         self.fc3=nn.Linear(embd_size, embd_size)
         # self.alpha = nn.Parameter(torch.ones(embd_size)*ALPHA_INIT)
@@ -469,8 +480,8 @@ class whole_model(nn.Module):
     
         # ---------- Stage3: Depression-related Feature Extraction ----------
         # XA, XT: [B, num_seg, 1024]，segment-level pooled
-        XA_proj = self.in_proj(XA)  # [B, num_seg, D]
-        XT_proj = self.in_proj(XT)
+        XA_proj = self.a_in_proj(XA)  # [B, num_seg, D]
+        XT_proj = self.t_in_proj(XT)
 
         if self.encoder_type == "attn":
             HA = self.a_transformer_enc(XA_proj, src_key_padding_mask=aMask)
@@ -491,8 +502,12 @@ class whole_model(nn.Module):
             if tMask is not None: HT = HT.masked_fill(tMask.unsqueeze(-1), 0.0)
         else: raise "encoder_type error(transformer or hope)"
 
-        eA = self.masked_mean(HA, aMask)  # [B, D]
-        eT = self.masked_mean(HT, tMask)  # [B, D]
+        eA = self.masked_max(HA, aMask)  # [B, D]
+        eT = self.masked_max(HT, tMask)  # [B, D]
+
+        # if self.training:
+        #     print(f"[eT Check] 全體 norm: {eT.norm(dim=-1).mean().item():.4f}, "
+        #             f"std: {eT.norm(dim=-1).std().item():.4f}")
 
         # 在 forward 裡 masked_mean 之後
         # print(f"aMask padding ratio: {aMask.float().mean().item():.4f}")
@@ -500,24 +515,56 @@ class whole_model(nn.Module):
 
         # ---------- ATEI: 永遠用 frame-level feature ----------
         # 不受 encoder_type 影響，ATEI 內部自己有 Transformer
+        # === Batched ATEI forward ===
+        # 1. 收集每個 patient 的 segment 數,後面拆回去用
+        seg_counts = [xa_seg.size(0) for xa_seg in xa_seg_list]
+
+        # 2. 找出整個 batch 裡的 max_T(audio 和 text 分開,因為 seq_len 不同)
+        max_T_a = max(xa_seg.size(1) for xa_seg in xa_seg_list)
+        max_T_t = max(xt_seg.size(1) for xt_seg in xt_seg_list)
+        D_in = xa_seg_list[0].size(-1)  # 1024
+
+        # 3. 把所有 segment pad 到統一長度後 cat 成 [total_segs, max_T, 1024]
+        device_local = xa_seg_list[0].device
+        total_segs = sum(seg_counts)
+
+        batch_a = torch.zeros(total_segs, max_T_a, D_in, 
+                            device=device_local, dtype=xa_seg_list[0].dtype)
+        batch_t = torch.zeros(total_segs, max_T_t, D_in, 
+                            device=device_local, dtype=xt_seg_list[0].dtype)
+
+        start = 0
+        for xa_seg, xt_seg in zip(xa_seg_list, xt_seg_list):
+            n = xa_seg.size(0)
+            batch_a[start:start+n, :xa_seg.size(1)] = xa_seg
+            batch_t[start:start+n, :xt_seg.size(1)] = xt_seg
+            start += n
+
+        # 4. 算 mask
+        mask_a = (batch_a.sum(dim=-1) == 0)
+        mask_t = (batch_t.sum(dim=-1) == 0)
+
+        # 5. 一次塞進 ATEI!
+        eE_all, logits_all = self.atei(batch_a, batch_t, mask_a, mask_t)
+        # eE_all: [total_segs, 256], logits_all: [total_segs, 2]
+
+        # 6. 用 seg_counts 拆回每個 patient,然後對 segment 取 mean
         eE_list = []
         atei_logits_list = []
-        for xa_seg, xt_seg in zip(xa_seg_list, xt_seg_list):
-            # xa_seg: [num_seg, max_T, 1024]
-            xa_seg = xa_seg.to(XA.device)
-            xt_seg = xt_seg.to(XA.device)
-            seg_mask_a = (xa_seg.sum(dim=-1) == 0)
-            seg_mask_t = (xt_seg.sum(dim=-1) == 0)
-            
-            eE_i, logits_i = self.atei(xa_seg, xt_seg, seg_mask_a, seg_mask_t)
-            eE_list.append(eE_i.mean(dim=0))           # [D]
-            atei_logits_list.append(logits_i.mean(dim=0))  # [2]
+        start = 0
+        for count in seg_counts:
+            eE_list.append(eE_all[start:start+count].mean(dim=0))           # [256]
+            atei_logits_list.append(logits_all[start:start+count].mean(dim=0))  # [2]
+            start += count
 
-        eE = torch.stack(eE_list, dim=0)               # [B, D]
+        eE = torch.stack(eE_list, dim=0)               # [B, 256]
+        eE = self.atei_proj(eE)
         atei_logits = torch.stack(atei_logits_list, dim=0)  # [B, 2]
         # forward 裡暫時跳過 ATEI，直接用零向量
         # eE = torch.zeros_like(eA)
         # atei_logits = torch.zeros(eA.size(0), 2, device=eA.device)
+
+
 
         # ---------- Scaling ----------
         # alpha_norm = torch.softmax(self.alpha, dim=0)
@@ -530,8 +577,8 @@ class whole_model(nn.Module):
         # print(f"eE norm: {eE.norm(dim=-1).mean().item():.4f}")
 
         # ---------- Stage4: Fusion ----------
-        # eFusion = torch.cat((eA, eE, eT), dim=1)       # [B, 3D]
-        eFusion=eT
+        eFusion = torch.cat((eA, eE, eT), dim=1)       # [B, 3D]
+        # eFusion=eT
         Fc1 = self.dropout(F.relu(self.fc1(eFusion)))
         Fc2 = self.dropout(F.relu(self.fc2(Fc1)))
         Fc3 = self.dropout(F.relu(self.fc3(Fc2)))
@@ -541,6 +588,12 @@ class whole_model(nn.Module):
             return atei_logits, dep_logits, Fc3
         return atei_logits, dep_logits
     
+    def masked_max(self, x, mask):
+        if mask is None: return x.max(dim=1)[0]
+
+        # padding 位置填 -inf,這樣 max 不會選到它們
+        x = x.masked_fill(mask.unsqueeze(-1), float('-inf'))
+        return x.max(dim=1)[0]
     def masked_mean(self, x, mask):
         if mask is None: return x.mean(dim=1)
 
@@ -562,17 +615,21 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
         
         xa, xt, aMask, tMask, atei_label, dep_label, Patient, xa_seg_list, xt_seg_list = data
 
-        xa = xa.to(device)
-        xt = xt.to(device)
-        aMask = aMask.to(device)
-        tMask = tMask.to(device)
-        atei_label = atei_label.to(device)
-        dep_label = dep_label.to(device)
+        xa = xa.to(device, non_blocking=True)
+        xt = xt.to(device, non_blocking=True)
+        aMask = aMask.to(device, non_blocking=True)
+        tMask = tMask.to(device, non_blocking=True)
+        atei_label = atei_label.to(device, non_blocking=True)
+        dep_label = dep_label.to(device, non_blocking=True)
+
+        xa_seg_list = [x.to(device, non_blocking=True) for x in xa_seg_list]
+        xt_seg_list = [x.to(device, non_blocking=True) for x in xt_seg_list]
 
         opt.zero_grad()
-        with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
-            atei_logits, dep_logits=model(xa,xt,aMask,tMask, xa_seg_list=xa_seg_list,xt_seg_list=xt_seg_list) # logits:　[LenFeat,2] eg: [89,2]
-        
+        # with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
+        # with torch.autocast(device_type="cuda", enabled=False):
+        with torch.autocast(device_type="cuda", enabled=(device == "cuda"), dtype=torch.bfloat16):
+            atei_logits, dep_logits=model(xa,xt,aMask,tMask, xa_seg_list=xa_seg_list,xt_seg_list=xt_seg_list)
             # patient_atei=atei_logits.mean(dim=1) # torch.Size([2])
             # patient_dep=dep_logits.mean(dim=1)
                     
@@ -581,22 +638,46 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
             # L_Depression = loss_dep(patient_dep.unsqueeze(0), dep_label.unsqueeze(0)) # 加batch
             L_Atei = loss_atei(atei_logits, atei_label)   # [B, 2], [B]
             L_Depression = loss_dep(dep_logits, dep_label) # [B, 3], [B]
-            if cur_epoch < 30:
-                LAMBDA_ATEI = 0.05
-            else:
-                progress = (cur_epoch - 30) / (EPOCHS - 30)
-                LAMBDA_ATEI = 0.05 + (0.3 - 0.05) * progress
+            # if cur_epoch < 30:
+            #     LAMBDA_ATEI = 0.05
+            # else:
+            #     progress = (cur_epoch - 30) / (EPOCHS - 30)
+            #     LAMBDA_ATEI = 0.05 + (0.3 - 0.05) * progress
             L_Total=LAMBDA_ATEI*L_Atei+L_Depression
+            # print(f"L_atei: {LAMBDA_ATEI*L_Atei} L_Depression: {L_Depression}"") 觀察atei的重要性!
+            # L_Total=L_Depression
             # ===
+            
+
+        
 
         # gpt
-        scaler.scale(L_Total).backward()
+        # scaler.scale(L_Total).backward()
 
-        scaler.unscale_(opt)
+        # scaler.unscale_(opt)
+        L_Total.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-        scaler.step(opt)
-        scaler.update()
+        opt.step()
+        # scaler.step(opt)
+        # scaler.update()
+
+        # if valid_batches == 1:  # 只檢查第一個 batch
+        #     print(f"\n[Grad Check] Epoch {cur_epoch}:")
+        # for name, param in model.named_parameters():
+        #     if 't_transformer_enc' in name and param.grad is not None:
+        #         print(f"  {name}: {param.grad.norm().item():.6f}")
+
+        # 看梯度是否有成功限縮於 T modality
+        # for name, param in model.named_parameters():
+        #     if param.grad is None:
+        #         print(name, "NO GRAD")
+        #     else:
+        #         print(
+        #             name,
+        #             "grad norm:",
+        #             param.grad.norm().item()
+        #         )
         # ===
         # scaler.scale(L_Total).backward()
         # scaler.step(opt)
@@ -614,6 +695,7 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
         correct_dep += (dep_pred == dep_label).sum().item()
         valid_batches += 1
         total_samples += dep_label.size(0)
+        
 
         pbar.set_postfix({
             "atei loss": totAteiLoss/valid_batches,
@@ -633,6 +715,8 @@ def train_one_epoch(model, tr_loader, loss_atei, loss_dep, opt, device, cur_epoc
     print("Train true dist:", Counter(train_true_arr))
     print("Train pred dist:", Counter(train_pred_arr))
     # ===
+
+    
     return {"atei_loss": totAteiLoss/valid_batches,
             "dep_loss": totDepLoss/valid_batches,
             "tot_loss": totLoss/valid_batches,
@@ -657,13 +741,17 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
 
             xa, xt, aMask, tMask, atei_label, dep_label, Patient, xa_seg_list, xt_seg_list = data
 
-            xa = xa.to(device)
-            xt = xt.to(device)
-            aMask = aMask.to(device)
-            tMask = tMask.to(device)
-            dep_label = dep_label.to(device)
+            xa = xa.to(device, non_blocking=True)
+            xt = xt.to(device, non_blocking=True)
+            aMask = aMask.to(device, non_blocking=True)
+            tMask = tMask.to(device, non_blocking=True)
+            dep_label = dep_label.to(device, non_blocking=True)
+            # breakpoint()
 
-            with torch.autocast(device_type="cuda",enabled=(device == "cuda"),):
+            xa_seg_list = [x.to(device, non_blocking=True) for x in xa_seg_list]
+            xt_seg_list = [x.to(device, non_blocking=True) for x in xt_seg_list]
+
+            with torch.autocast(device_type="cuda",enabled=(device == "cuda"), dtype=torch.bfloat16):
                 _, dep_logits= model(xa, xt, aMask, tMask, xa_seg_list=xa_seg_list,xt_seg_list=xt_seg_list)
 
                 patient_dep = dep_logits.squeeze(0)
@@ -686,7 +774,6 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
                 "dep_loss": totDepLoss / valid_batches,
             })
     metrics = get_metrics(true_arr, pred_arr)
-
     # gpt
     from sklearn.metrics import classification_report, confusion_matrix
 
@@ -728,7 +815,7 @@ class stage2_dataset(Dataset):
 
         depMap, train_Idx, val_Idx, test_Idx = get_Split_and_GroundTrue()
 
-        if cv_split is not None:
+        if cv_split is not None: # cv->cross validation
             if fold == "tr":
                 patient_Idx = cv_split["train"]
             elif fold == "val":
@@ -761,42 +848,49 @@ class stage2_dataset(Dataset):
             atei_label = PseudoMap[p] if p in PseudoMap else 1
 
             self.ds.append((p, atei_label, dep_label, a_path, t_path))
-
     def __len__(self):
         return len(self.ds)
 
+    # def __getitem__(self, index):
+        # Patient, PseudoL, DepL, a_path, t_path = self.ds[index]
+
+        # xa = torch.load(str(a_path),map_location="cpu")
+        # xt = torch.load(str(t_path),map_location="cpu")
+
+        # xa_list = [x.squeeze(0) for x in xa]
+        # xt_list = [x.squeeze(0) for x in xt]
     def __getitem__(self, index):
         Patient, PseudoL, DepL, a_path, t_path = self.ds[index]
-
-        xa = torch.load(str(a_path))
-        xt = torch.load(str(t_path))
-
+        
+        # ✅ 加 mmap=True
+        xa = torch.load(str(a_path), map_location="cpu", mmap=True)
+        xt = torch.load(str(t_path), map_location="cpu", mmap=True)
+        
         xa_list = [x.squeeze(0) for x in xa]
         xt_list = [x.squeeze(0) for x in xt]
-
+        
         atei_label = torch.tensor(PseudoL, dtype=torch.long)
         dep_label = torch.tensor(DepL, dtype=torch.long)
-
-
+        
         return xa_list, xt_list, atei_label, dep_label, Patient
     
 
 
 def stage2_collate_fn(batch):
-    xa_seg_list = []   # 給 ATEI 用：保留 frame-level
+    xa_seg_list = []
     xt_seg_list = []
-    xa_pool_list = []  # 給 Stage3 Transformer 用：segment-level pooled
+    xa_pool_list = []
     xt_pool_list = []
     atei_labels = []
     dep_labels = []
     patients = []
 
     for xa_i, xt_i, atei_label, dep_label, patient in batch:
-        # Stage3 用：每句話 mean pool -> [num_seg, 1024]
+        # Stage3 用:segment mean pool
         xa_pool_list.append(torch.stack([x.mean(dim=0) for x in xa_i], dim=0))
         xt_pool_list.append(torch.stack([x.mean(dim=0) for x in xt_i], dim=0))
 
-        # ATEI 用：保留 frame-level，pad 成 [num_seg, max_T, 1024]
+        # ATEI 用:pad 成 [num_seg, max_T, 1024]
         xa_seg_list.append(pad_sequence(xa_i, batch_first=True))
         xt_seg_list.append(pad_sequence(xt_i, batch_first=True))
 
@@ -804,13 +898,10 @@ def stage2_collate_fn(batch):
         dep_labels.append(dep_label)
         patients.append(patient)
 
-    # Stage3 input: [B, max_num_seg, 1024]
     xa_pool = pad_sequence(xa_pool_list, batch_first=True)
     xt_pool = pad_sequence(xt_pool_list, batch_first=True)
     aMask = (xa_pool.sum(dim=-1) == 0)
     tMask = (xt_pool.sum(dim=-1) == 0)
-    # 在 collate_fn 裡加這行
-    # print(f"aMask any padding: {aMask.any().item()}, ratio: {aMask.float().mean().item():.4f}")
 
     atei_labels = torch.stack(atei_labels)
     dep_labels = torch.stack(dep_labels)

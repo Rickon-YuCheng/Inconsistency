@@ -98,8 +98,8 @@ class daicwoz_dataset(Dataset):
     def __getitem__(self, index):
         Patient, PseudoL, DepL, a_path, t_path=self.ds[index]
         
-        xa = torch.load(str(a_path))
-        xt = torch.load(str(t_path))
+        xa = torch.load(str(a_path),map_location="cpu")
+        xt = torch.load(str(t_path),map_location="cpu")
 
         xa_list=[x.squeeze(0) for x in xa] # 這個人的每句話
         xt_list=[x.squeeze(0) for x in xt]
@@ -284,8 +284,8 @@ def main():
 
     # sampler = build_pseudo_balanced_sampler(trDS, seed=ARGS.seed)
 
-    tr_loader = DataLoader(trDS, collate_fn=collate_fn, shuffle=True,generator=g, worker_init_fn=numpy_random_init)
-    val_loader = DataLoader(valDS, collate_fn=collate_fn, shuffle=False,generator=g, worker_init_fn=numpy_random_init)
+    tr_loader = DataLoader(trDS, collate_fn=collate_fn, shuffle=True,generator=g, worker_init_fn=numpy_random_init,num_workers=0,pin_memory=True,)
+    val_loader = DataLoader(valDS, collate_fn=collate_fn, shuffle=False,generator=g, worker_init_fn=numpy_random_init,num_workers=0,pin_memory=True)
 
     model=atei(D_MODEL,NHEAD, dropout=ARGS.dropout).to(device)
     opt=torch.optim.Adam(model.parameters(),lr=LR,weight_decay=ARGS.weight_decay)
@@ -320,7 +320,8 @@ def main():
 
             opt.zero_grad()
 
-            with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
+            # with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
+            with torch.autocast(device_type="cuda", enabled=(device == "cuda"), dtype=torch.bfloat16):
                 feat, logits = model(xa, xt, aMask, tMask)
                 patient_feat = feat.mean(dim=0)
                 patient_logit = model.patient_oup(patient_feat)
@@ -483,7 +484,7 @@ def validate(model, loader, criterion, device):
         #     patient_logit = logits.mean(dim=0)
         #     loss = criterion(patient_logit.unsqueeze(0), atei_label.unsqueeze(0))
         #     loss = loss.mean()
-        with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
+        with torch.autocast(device_type="cuda", enabled=(device == "cuda"), dtype=torch.bfloat16):
             feat, logits = model(xa, xt, aMask, tMask)
             patient_feat = feat.mean(dim=0)
             patient_logit = model.patient_oup(patient_feat)
@@ -530,11 +531,12 @@ def imsave(history):
     plt.savefig("stage1_tr_loss.jpg")
 
 class atei(nn.Module):
-    def __init__(self,embd_size,nheads,inp_dim=1024, dropout=0.4):
+    def __init__(self,embd_size,nheads,inp_dim=1024, dropout=0.4,TRANSFORMER_ENC_LAYERS=1):
         # super(atei,self).__init__()
         super().__init__()
         assert embd_size % nheads == 0, "Embedding size must be divisible by number of heads"
-        self.in_proj=nn.Linear(inp_dim,embd_size) # Dynamic projection, Hubert and Wav2Vec2 oup are 1024 dim
+        self.a_in_proj=nn.Sequential(nn.Linear(inp_dim,embd_size),nn.LayerNorm(embd_size)) # Dynamic projection, Hubert and Wav2Vec2 oup are 1024 dim
+        self.t_in_proj=nn.Sequential(nn.Linear(inp_dim,embd_size),nn.LayerNorm(embd_size)) # Dynamic projection, Hubert and Wav2Vec2 oup are 1024 dim
         enc_layer=nn.TransformerEncoderLayer(d_model=embd_size, nhead=nheads,batch_first=True,dim_feedforward=4 * embd_size,dropout=dropout)
         self.transformer_enc=nn.TransformerEncoder(enc_layer,num_layers=TRANSFORMER_ENC_LAYERS) #12
 
@@ -551,8 +553,8 @@ class atei(nn.Module):
         
 
     def forward(self,xa, xt, aMask=None, tMask=None):
-        xa=self.in_proj(xa)
-        xt=self.in_proj(xt)
+        xa=self.a_in_proj(xa)
+        xt=self.t_in_proj(xt)
         XprimeA,XprimeT=[],[]
 
         def run_transformer(x, mask):

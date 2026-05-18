@@ -15,6 +15,12 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 \
     build-essential \
     ca-certificates \
+    openssh-server \
+    tmux \
+    htop \
+    && mkdir -p /var/run/sshd \
+    && echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config \
+    && echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -31,15 +37,22 @@ COPY scripts /workspace/scripts
 COPY src /workspace/src
 COPY Makefile CITATION.cff LICENSE /workspace/
 COPY weights/stage1/stage1_20260510_051049_seed42_f10.7619_ep044_lr2e-05_wd5e-04_d128_l1.pt /workspace/weights/stage1/
+COPY weights/stage1/stage1_20260513_082404_seed42_f10.7018_ep025_lr1e-04_wd1e-04_d64_l1.pt /workspace/weights/stage1/
+COPY weights/stage1/stage1_20260513_174400_seed42_f10.7018_ep032_lr1e-04_wd1e-04_d32_l1.pt /workspace/weights/stage1/
+COPY weights/stage1/stage1_20260514_052912_seed42_f10.7059_ep043_lr1e-04_wd1e-04_d256_l1.pt /workspace/weights/stage1/
+COPY weights/stage1/stage1_20260517_102119_seed42_f10.7059_ep046_lr1e-04_wd1e-04_d256_l1.pt /workspace/weights/stage1/
 COPY PseudoLabel_all_distilbert_zdist_q30_70.npz /workspace/
 
 COPY nested_learning /workspace/nested_learning
-RUN uv pip install -e /workspace/nested_learning --no-deps
+ENV PYTHONPATH="/workspace/nested_learning/src:${PYTHONPATH}"
+RUN uv pip install -e . --no-deps
 
+RUN echo 'export PATH="/root/.local/bin:/workspace/.venv/bin:$PATH"' >> /root/.bashrc && \
+    echo 'export PYTHONPATH="/workspace/nested_learning/src:$PYTHONPATH"' >> /root/.bashrc && \
+    echo 'cd /workspace' >> /root/.bashrc
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 
-CMD ["bash"]

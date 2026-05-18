@@ -4,10 +4,7 @@
 
 # 裝載特徵
 HF_TOKEN:
-hf download Leopold99/inconsistency-feature \
-  --repo-type dataset \
-  --local-dir /workspace/datasets/Feature \
-  --token "$$HF_TOKEN"
+	hf	download	Leopold99/inconsistency-feature	--repo-type	dataset	--local-dir	/workspace/datasets/Feature	--token	"$$HF_TOKEN"
 
 # 啟動實驗
 train:

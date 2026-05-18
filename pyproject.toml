@@ -20,6 +20,9 @@ dependencies = [
     "seaborn>=0.13.2",
     "openhownet>=2.0",
     "wandb>=0.26.1",
+    "torchviz>=0.0.3",
+    "graphviz>=0.21",
+    "torchinfo>=1.8.0",
 ]
 
 [[tool.uv.index]]
@@ -29,6 +32,7 @@ url = "https://download.pytorch.org/whl/cu121"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
 
 [dependency-groups]
 dev = [

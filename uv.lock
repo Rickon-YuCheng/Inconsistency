@@ -161,6 +161,15 @@ wheels = [
 ]
 
 [[package]]
+name = "graphviz"
+version = "0.21"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/b3/3ac91e9be6b761a4b30d66ff165e54439dcd48b83f4e20d644867215f6ca/graphviz-0.21.tar.gz", hash = "sha256:20743e7183be82aaaa8ad6c93f8893c923bd6658a04c32ee115edb3c8a835f78", size = 200434, upload-time = "2025-06-15T09:35:05.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/4c/e0ce1ef95d4000ebc1c11801f9b944fa5910ecc15b5e351865763d8657f8/graphviz-0.21-py3-none-any.whl", hash = "sha256:54f33de9f4f911d7e84e4191749cac8cc5653f815b06738c54db9a15ab8b1e42", size = 47300, upload-time = "2025-06-15T09:35:04.433Z" },
+]
+
+[[package]]
 name = "huggingface-hub"
 version = "0.23.5"
 source = { registry = "https://pypi.org/simple" }
@@ -204,6 +213,7 @@ name = "inconsistency"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "graphviz" },
     { name = "huggingface-hub" },
     { name = "matplotlib" },
     { name = "openhownet" },
@@ -214,7 +224,9 @@ dependencies = [
     { name = "speechbrain" },
     { name = "torch" },
     { name = "torchaudio" },
+    { name = "torchinfo" },
     { name = "torchvision" },
+    { name = "torchviz" },
     { name = "transformers" },
     { name = "wandb" },
 ]
@@ -227,6 +239,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "graphviz", specifier = ">=0.21" },
     { name = "huggingface-hub", specifier = "==0.23.5" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "openhownet", specifier = ">=2.0" },
@@ -237,7 +250,9 @@ requires-dist = [
     { name = "speechbrain", specifier = "==1.0.1" },
     { name = "torch", specifier = "==2.4.1+cu121" },
     { name = "torchaudio", specifier = "==2.4.1+cu121" },
+    { name = "torchinfo", specifier = ">=1.8.0" },
     { name = "torchvision", specifier = "==0.19.1+cu121" },
+    { name = "torchviz", specifier = ">=0.0.3" },
     { name = "transformers", specifier = "==4.35.2" },
     { name = "wandb", specifier = ">=0.26.1" },
 ]
@@ -1054,6 +1069,15 @@ wheels = [
 ]
 
 [[package]]
+name = "torchinfo"
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/d9/2b811d1c0812e9ef23e6cf2dbe022becbe6c5ab065e33fd80ee05c0cd996/torchinfo-1.8.0.tar.gz", hash = "sha256:72e94b0e9a3e64dc583a8e5b7940b8938a1ac0f033f795457f27e6f4e7afa2e9", size = 25880, upload-time = "2023-05-14T19:23:26.377Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/25/973bd6128381951b23cdcd8a9870c6dcfc5606cb864df8eabd82e529f9c1/torchinfo-1.8.0-py3-none-any.whl", hash = "sha256:2e911c2918603f945c26ff21a3a838d12709223dc4ccf243407bce8b6e897b46", size = 23377, upload-time = "2023-05-14T19:23:24.141Z" },
+]
+
+[[package]]
 name = "torchvision"
 version = "0.19.1+cu121"
 source = { registry = "https://download.pytorch.org/whl/cu121" }
@@ -1065,6 +1089,19 @@ dependencies = [
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-linux_x86_64.whl", hash = "sha256:b8cc4bf381b75522995b601e07a1b433b5fd925dc3e34a7fa6cd22f449d65379", upload-time = "2024-09-06T21:53:00Z" },
     { url = "https://download-r2.pytorch.org/whl/cu121/torchvision-0.19.1%2Bcu121-cp310-cp310-win_amd64.whl", hash = "sha256:e530c6bbb72f587f0e94740758f005c99e6de871ed9d10afffd8f18bd41e5df0", upload-time = "2024-09-06T21:53:00Z" },
+]
+
+[[package]]
+name = "torchviz"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "graphviz" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/80/a84e0e8877630262c3f4c8d2e7fd0647c6751afeca301cfc04a1b65ac820/torchviz-0.0.3.tar.gz", hash = "sha256:2e95f2fea7a31ec9549f2d6bbf446d75aeb6a9880fcf13e7dd843fdcdb4a3725", size = 5705, upload-time = "2024-12-02T02:46:54.671Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/06/bea648249802b65282414caf5e7bc94fcb6e5a3e311b537845417d19edb9/torchviz-0.0.3-py3-none-any.whl", hash = "sha256:5eab98d17cbe8a54727cfa6a527681cff613430fff8fc68f52302ca5fa26cdf1", size = 5708, upload-time = "2024-12-02T02:46:52.838Z" },
 ]
 
 [[package]]
