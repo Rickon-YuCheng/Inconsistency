@@ -280,8 +280,8 @@ def DISTILBERT(ds: str, ds_dir: str, device: str, split: str) -> None:
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
 
-    draw(idx, poslist, neglist, neulist, f"DistilBert_{split}.jpg")
-    save_patient_npz(f"DistilBert_{split}", idx, poslist, neglist, neulist)
+    draw(idx, poslist, neglist, neulist, f"DistilBert_{split}_v2.jpg")
+    save_patient_npz(f"DistilBert_{split}_v2", idx, poslist, neglist, neulist)
     save_seg_npz(f"DistilBert_seg_{split}_v2", seg_patientIdx, seg_segIdx, seg_label)
     print(f"DistilBert segment-level total: {len(seg_label)} segments")
 
@@ -361,8 +361,8 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str, split: str) -> None:
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
 
-    draw(idx, poslist, neglist, neulist, f"Wav2Vec2_{split}.jpg")
-    save_patient_npz(f"Wav2Vec2_{split}", idx, poslist, neglist, neulist)
+    draw(idx, poslist, neglist, neulist, f"Wav2Vec2_{split}_v2.jpg")
+    save_patient_npz(f"Wav2Vec2_{split}_v2", idx, poslist, neglist, neulist)
     save_seg_npz(f"Wav2Vec2_seg_{split}_v2", seg_patientIdx, seg_segIdx, seg_label)
     print(f"Wav2Vec2 segment-level total: {len(seg_label)} segments")
 
@@ -528,8 +528,8 @@ def HOWNET(ds: str, ds_dir: str, device: str, split: str):
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
 
-    draw(idx, poslist, neglist, neulist, f"HowNet_{split}.jpg")
-    save_patient_npz(f"HowNet_{split}", idx, poslist, neglist, neulist)
+    draw(idx, poslist, neglist, neulist, f"HowNet_{split}_v2.jpg")
+    save_patient_npz(f"HowNet_{split}_v2", idx, poslist, neglist, neulist)
     save_seg_npz(f"HowNet_seg_{split}_v2", seg_patientIdx, seg_segIdx, seg_label)
     print(f"HowNet segment-level total: {len(seg_label)} segments")
 
