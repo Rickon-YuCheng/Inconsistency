@@ -22,3 +22,8 @@ nested_learning/
 
 datasets/DAICWOZ/
 datasets/Feature
+datasets/Feature2
+datasets/EATD
+datasets/Feat_daic_eatd
+datasets/Feat_seg_bin_daic
+datasets/Feat_seg_bin_daic_eatd

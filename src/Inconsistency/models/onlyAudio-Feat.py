@@ -1,18 +1,22 @@
 """
-f1 0.56
-uv run src/Inconsistency/models/onlyText.py  --epochs 3000 --enc_layers 1 --d_model 256 --dropout 0.3 --weight_decay 0 --lr 1e-3 --batch_size 32 --patience 500
+f1 0.50
+uv run src/Inconsistency/models/onlyAudio.py  --epochs 3000 --enc_layers 10 --d_model 512 --dropout 0.3 --weight_decay 0 --lr 1e-3 --batch_size 32 --patience 500"""
 """
-"""
-Stage2 Training Script — Text Modality Only
+Stage2 Training Script — Audio Modality Only
 
-只使用 RoBERTa text feature 訓練 depression 3-class 分類。
-完全不載入 / 計算 acoustic 與 ATEI 分支。
+只使用 HuBERT acoustic feature 訓練 depression 3-class 分類。
+完全不載入 / 計算 text 與 ATEI 分支。
 
 跟原版差別:
-- whole_model 只保留 text encoder + fc1/2/3 + oup
-- dataset 只讀 t_path (text feature)
-- collate 只處理 text
+- whole_model 只保留 audio encoder + fc1/2/3 + oup
+- dataset 只讀 a_path (acoustic feature)
+- collate 只處理 audio
 - loss 只算 L_Depression,不算 L_Atei
+
+跟 text-only 版差別:
+- 換成讀 HuBERT feature(datasets/Feature/HuBERT/{pid}_acoustic.pt)
+- encoder 命名改為 a_transformer_enc
+- batch tensor 命名改為 xa / aMask
 """
 
 import numpy as np
@@ -62,11 +66,11 @@ def parse_args():
 
     parser.add_argument("--patience", type=int, default=PATIENCE)
 
-    parser.add_argument("--save_dir", type=str, default="weights/stage2_text_only")
+    parser.add_argument("--save_dir", type=str, default="weights/stage2_audio_only-Feat")
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--use_wandb", action="store_true")
-    parser.add_argument("--wandb_project", type=str, default="Emotion inconsistency - Stage2 TextOnly")
+    parser.add_argument("--wandb_project", type=str, default="Emotion inconsistency - Stage2 AudioOnly")
     parser.add_argument("--wandb_name", type=str, default=None)
 
     parser.add_argument("--batch_size", type=int, default=2, help="batch size for DataLoader")
@@ -100,21 +104,21 @@ def build_kfold_splits(n_splits=5, seed=42):
 
 
 # ============================================================
-# Model — Text Only
+# Model — Audio Only
 # ============================================================
 class whole_model(nn.Module):
     """
-    Text-only depression classifier.
+    Audio-only depression classifier.
 
-    Stage3: text encoder (Transformer) -> masked_max pool -> eT
+    Stage3: audio encoder (Transformer) -> masked_max pool -> eA
     Stage4: fc1 -> fc2 -> fc3 -> oup (3-class)
     """
     def __init__(self, embd_size=D_MODEL, nheads=NHEAD):
         super().__init__()
-        # RoBERTa output dim = 1024
+        # HuBERT output dim = 1024
         self.in_proj = nn.Linear(1024, embd_size)
 
-        t_enc_layer = nn.TransformerEncoderLayer(
+        a_enc_layer = nn.TransformerEncoderLayer(
             d_model=embd_size,
             dropout=ARGS.dropout,
             dim_feedforward=4 * embd_size,
@@ -122,8 +126,8 @@ class whole_model(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.t_transformer_enc = nn.TransformerEncoder(
-            t_enc_layer,
+        self.a_transformer_enc = nn.TransformerEncoder(
+            a_enc_layer,
             num_layers=TRANSFORMER_ENC_LAYERS,
             enable_nested_tensor=False,
         )
@@ -134,14 +138,14 @@ class whole_model(nn.Module):
         self.fc3 = nn.Linear(embd_size, embd_size)
         self.oup = nn.Linear(embd_size, 3)
 
-    def forward(self, XT, tMask=None, return_feature=False):
-        # XT: [B, num_seg, 1024]
-        XT_proj = self.in_proj(XT)
-        HT = self.t_transformer_enc(XT_proj, src_key_padding_mask=tMask)
+    def forward(self, XA, aMask=None, return_feature=False):
+        # XA: [B, num_seg, 1024]
+        XA_proj = self.in_proj(XA)
+        HA = self.a_transformer_enc(XA_proj, src_key_padding_mask=aMask)
 
-        eT = self.masked_max(HT, tMask)  # [B, D]
+        eA = self.masked_max(HA, aMask)  # [B, D]
 
-        Fc1 = self.dropout(F.relu(self.fc1(eT)))
+        Fc1 = self.dropout(F.relu(self.fc1(eA)))
         Fc2 = self.dropout(F.relu(self.fc2(Fc1)))
         Fc3 = self.dropout(F.relu(self.fc3(Fc2)))
         dep_logits = self.oup(Fc3)  # [B, 3]
@@ -179,15 +183,15 @@ def train_one_epoch(model, tr_loader, loss_dep, opt, device, cur_epoch, tot_epoc
                 leave=False, unit='batch')
 
     for data in pbar:
-        xt, tMask, dep_label, Patient = data
+        xa, aMask, dep_label, Patient = data
 
-        xt = xt.to(device)
-        tMask = tMask.to(device)
+        xa = xa.to(device)
+        aMask = aMask.to(device)
         dep_label = dep_label.to(device)
 
         opt.zero_grad()
         with torch.autocast(device_type="cuda", enabled=False):
-            dep_logits = model(xt, tMask)             # [B, 3]
+            dep_logits = model(xa, aMask)             # [B, 3]
             L_Depression = loss_dep(dep_logits, dep_label)
             L_Total = L_Depression
 
@@ -237,14 +241,14 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
             if data is None:
                 continue
 
-            xt, tMask, dep_label, Patient = data
+            xa, aMask, dep_label, Patient = data
 
-            xt = xt.to(device)
-            tMask = tMask.to(device)
+            xa = xa.to(device)
+            aMask = aMask.to(device)
             dep_label = dep_label.to(device)
 
             with torch.autocast(device_type="cuda", enabled=(device == "cuda")):
-                dep_logits = model(xt, tMask)                     # [1, 3]
+                dep_logits = model(xa, aMask)                     # [1, 3]
                 L_Depression = loss_dep(dep_logits, dep_label)    # 直接餵,batch=1
 
             dep_pred = dep_logits.argmax(dim=-1)                  # [1]
@@ -282,11 +286,11 @@ def val(model, val_loader, loss_dep, device, cur_epoch, tot_epochs):
 # ============================================================
 class stage2_dataset(Dataset):
     """
-    Text-only dataset. 只讀 RoBERTa text feature。
+    Audio-only dataset. 只讀 HuBERT acoustic feature。
     """
     def __init__(self, fold: str = "tr", cv_split=None):
         self.ds = []
-        t_root = Path("datasets/Feature/RoBerTa_slow")
+        a_root = Path("datasets/Feature2/HuBERT")
 
         depMap, train_Idx, val_Idx, test_Idx = get_Split_and_GroundTrue()
 
@@ -306,22 +310,22 @@ class stage2_dataset(Dataset):
                 patient_Idx = test_Idx
 
         for p in patient_Idx:
-            t_path = t_root / f"{p}_text.pt"
-            assert t_path.exists(), f"text feature not found: {t_path}"
+            a_path = a_root / f"{p}_acoustic.pt"
+            assert a_path.exists(), f"acoustic feature not found: {a_path}"
 
             dep_label = depMap[p]
-            # (patient_id, dep_label, text_path)
-            self.ds.append((p, dep_label, t_path))
+            # (patient_id, dep_label, acoustic_path)
+            self.ds.append((p, dep_label, a_path))
 
     def __len__(self):
         return len(self.ds)
 
     def __getitem__(self, index):
-        Patient, DepL, t_path = self.ds[index]
-        xt = torch.load(str(t_path))
-        xt_list = [x.squeeze(0) for x in xt]
+        Patient, DepL, a_path = self.ds[index]
+        xa = torch.load(str(a_path))
+        xa_list = [x.squeeze(0) for x in xa]
         dep_label = torch.tensor(DepL, dtype=torch.long)
-        return xt_list, dep_label, Patient
+        return xa_list, dep_label, Patient
 
 
 def stage2_collate_fn(batch):
@@ -329,21 +333,21 @@ def stage2_collate_fn(batch):
     每個 patient 的每句 mean-pool 成 segment-level [num_seg, 1024],
     然後 pad 成 [B, max_num_seg, 1024]。
     """
-    xt_pool_list = []
+    xa_pool_list = []
     dep_labels = []
     patients = []
 
-    for xt_i, dep_label, patient in batch:
+    for xa_i, dep_label, patient in batch:
         # 每句 frame-level mean -> [num_seg, 1024]
-        xt_pool_list.append(torch.stack([x.mean(dim=0) for x in xt_i], dim=0))
+        xa_pool_list.append(torch.stack([x.mean(dim=0) for x in xa_i], dim=0))
         dep_labels.append(dep_label)
         patients.append(patient)
 
-    xt_pool = pad_sequence(xt_pool_list, batch_first=True)   # [B, max_num_seg, 1024]
-    tMask = (xt_pool.sum(dim=-1) == 0)
+    xa_pool = pad_sequence(xa_pool_list, batch_first=True)   # [B, max_num_seg, 1024]
+    aMask = (xa_pool.sum(dim=-1) == 0)
     dep_labels = torch.stack(dep_labels)
 
-    return xt_pool, tMask, dep_labels, patients
+    return xa_pool, aMask, dep_labels, patients
 
 
 def get_metrics(y_true, y_pred):
@@ -380,7 +384,7 @@ def main():
             run_name = f"{ARGS.wandb_name}_fold{fold_id}"
         else:
             run_name = (
-                f"stage2_textonly_"
+                f"stage2_audioonly_"
                 f"seed{ARGS.seed}_"
                 f"lr{LR:.0e}_"
                 f"wd{ARGS.weight_decay:.0e}_"
@@ -404,14 +408,14 @@ def main():
                     "dropout": ARGS.dropout,
                     "weight_decay": ARGS.weight_decay,
                     "patience": PATIENCE,
-                    "loss_total": "L_Depression (text only)",
-                    "modality": "text_only",
+                    "loss_total": "L_Depression (audio only)",
+                    "modality": "audio_only",
                 },
                 save_code=True,
             )
 
         print("\n" + "=" * 100)
-        print(f"FOLD {fold_id}  (TEXT-ONLY)")
+        print(f"FOLD {fold_id}  (AUDIO-ONLY)")
         print("=" * 100)
         best_val_f1 = -1.0
         bad_epochs = 0
@@ -466,7 +470,7 @@ def main():
 
         # Class weights (用 dep_label 算)
         train_ds_records = trDS.ds
-        dep_counter = Counter([int(x[1]) for x in train_ds_records])  # x = (p, dep, t_path)
+        dep_counter = Counter([int(x[1]) for x in train_ds_records])  # x = (p, dep, a_path)
         total = sum(dep_counter.values())
         n_classes = 3
         weights = torch.tensor([
@@ -509,7 +513,7 @@ def main():
                 bad_epochs = 0
 
                 ckpt_name = (
-                    f"stage2_textonly_"
+                    f"stage2_audioonly_"
                     f"{run_id}_"
                     f"seed{ARGS.seed}_"
                     f"f1{best_val_f1:.4f}_"
@@ -538,7 +542,7 @@ def main():
                         "lr": LR,
                         "weight_decay": ARGS.weight_decay,
                         "dropout": ARGS.dropout,
-                        "modality": "text_only",
+                        "modality": "audio_only",
                     },
                     ckpt_path,
                 )
@@ -580,7 +584,7 @@ def main():
             wandb.finish()
 
     print("\n" + "=" * 100)
-    print("K-FOLD RESULT (TEXT-ONLY)")
+    print("K-FOLD RESULT (AUDIO-ONLY)")
     print("=" * 100)
     for i, f1 in enumerate(all_fold_results):
         print(f"Fold {i}: {f1:.4f}")
@@ -598,5 +602,5 @@ if __name__ == "__main__":
     TRANSFORMER_ENC_LAYERS = ARGS.enc_layers
     PATIENCE = ARGS.patience
 
-    print("** Text-Only Stage2 Training **")
+    print("** Audio-Only Stage2 Training **")
     main()

@@ -18,7 +18,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-SPLIT = "all" # all,train,val,test
+SPLIT = "all" # all,train,test
 CFG_PATH = "configs/inconsistentLabel.yaml"
 TRAIN_CSV="datasets/DAICWOZ/train_split_Depression_AVEC2017.csv"
 VAL_CSV="datasets/DAICWOZ/dev_split_Depression_AVEC2017.csv"
@@ -36,7 +36,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.set_defaults(**cfg)
     parser.add_argument("--ds", type=str, help="upper case")
-    parser.add_argument("--split",type=str,default=SPLIT,choices=["train", "val", "test", "all"],
+    parser.add_argument("--split",type=str,default=SPLIT,choices=["train", "test", "all"],
 )
     args = parser.parse_args()
 
@@ -47,61 +47,120 @@ def parse_args():
 
 def get_Split_and_GroundTrue():
     """ 
-    Split tr/val/test and get label(ground truth). 7:2:1
+    Split train/test and get label(ground truth).
+    train = official train split, test = official val(dev) split.
 
-    ### PHQ8: 
-        **No depression**: 0-4
-        **Slight depression**: 5-9
-        **Severe depression**: 10-24
-    
+    ### PHQ8_Binary (二元分類):
+        **No depression**: 0
+        **Depression**: 1
+
     ### Returns:
-        **depMap (dict)**: {patient id, PHQ8 label}
-        **train_idx**: train patient id, total patient(train_idx)=98
-        **val_idx**: val patient id, total patient(val_idx)=29
-        **test_idx** test patient id, total patient(test_idx)=15
+        **depMap (dict)**: {patient id, PHQ8_Binary label}
+        **train_idx**: train patient id
+        **test_idx**: test patient id (use val/dev split as test)
     """
-    def score_to_label(score: int) -> int:
-        if 0 <= score <= 4: return 0
-        elif 5 <= score <= 9: return 1
-        elif 10 <= score <= 24: return 2
-        else: raise ValueError(f"Unexpected PHQ8 score: {score}")
-
     tr = pd.read_csv(TRAIN_CSV)
     val = pd.read_csv(VAL_CSV)
-    df=pd.concat([tr,val], ignore_index=True)
-    # df = pd.read_csv(TRAIN_CSV)
 
     depMap = {} # Dict: tr + test, [id: gt_label]
 
-    for _, row in df.iterrows():
+    for _, row in pd.concat([tr, val], ignore_index=True).iterrows():
         pid = int(row["Participant_ID"])
-        score = int(row["PHQ8_Score"])
-        depMap[pid] = score_to_label(score) # [303: 0, .., 491: 1, 302: 0, .., 492: 0]
-    
-    patient_df = df[["Participant_ID", "PHQ8_Score"]]
-    patient_df = patient_df.copy()
-    patient_df["label"] = patient_df["PHQ8_Score"].apply(score_to_label)
-    # 7:2:1
-    tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=24,stratify=patient_df["label"])
-    tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=24,stratify=tr_val_df["label"])
+        depMap[pid] = int(row["PHQ8_Binary"])
 
-    train_idx = tr_df["Participant_ID"].astype(int).tolist() # len: 107, [303,304,..]
-    val_idx = val_df["Participant_ID"].astype(int).tolist()
-    test_idx = test_df["Participant_ID"].astype(int).tolist() # len: 35 [302,307,..]
-    return depMap, train_idx, val_idx, test_idx
+    train_idx = tr["Participant_ID"].astype(int).tolist()
+    test_idx = val["Participant_ID"].astype(int).tolist()
+
+    # === 原本的 tr+val 再切割 (7:2:1) ===
+    # df=pd.concat([tr,val], ignore_index=True)
+    # patient_df = df[["Participant_ID", "PHQ8_Binary"]]
+    # patient_df = patient_df.copy()
+    # patient_df["label"] = patient_df["PHQ8_Binary"]
+    # tr_val_df, test_df= train_test_split(patient_df, test_size=0.1, random_state=24,stratify=patient_df["label"])
+    # tr_df, val_df= train_test_split(tr_val_df, test_size=2/9, random_state=24,stratify=tr_val_df["label"])
+    # train_idx = tr_df["Participant_ID"].astype(int).tolist()
+    # val_idx = val_df["Participant_ID"].astype(int).tolist()
+    # test_idx = test_df["Participant_ID"].astype(int).tolist()
+    # =====================================
+
+    return depMap, train_idx, test_idx
+
+
+def get_stage1_kfold(n_splits: int = 3, seed: int = 42):
+    """
+    Stage1 專用 k-fold:只在「官方 train」內部做 StratifiedKFold,
+    完全不碰官方 dev(留給 Stage2 當 test)。
+
+    小資料量下單一 val 的 f1 抖動極大,用 k-fold 看 mean±std 才可信。
+
+    ### Returns:
+        **depMap (dict)**: {patient id, PHQ8_Binary label}
+        **folds (list)**: 每個元素 {"fold": i, "train": [...], "val": [...]}
+    """
+    from sklearn.model_selection import StratifiedKFold
+
+    tr = pd.read_csv(TRAIN_CSV)
+
+    depMap = {}
+    for _, row in pd.concat([pd.read_csv(TRAIN_CSV), pd.read_csv(VAL_CSV)],
+                            ignore_index=True).iterrows():
+        depMap[int(row["Participant_ID"])] = int(row["PHQ8_Binary"])
+
+    ids = tr["Participant_ID"].astype(int).tolist()
+    labels = tr["PHQ8_Binary"].astype(int).tolist()
+
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    folds = []
+    for i, (tr_i, val_i) in enumerate(skf.split(ids, labels)):
+        folds.append({
+            "fold": i,
+            "train": [ids[j] for j in tr_i],
+            "val": [ids[j] for j in val_i],
+        })
+    return depMap, folds
+
+
+def get_stage1_split(seed: int = 42):
+    """
+    Stage1 專用切分:只在「官方 train」內部做 stratify 8:2,
+    切成 Stage1 的 train / val。完全不碰官方 dev。
+
+    目的:官方 dev 完整保留給 Stage2 當 test,避免 Stage1 看過 dev
+    造成 Stage2 評估洩漏。同時用 stratify 讓 Stage1 的 train/val
+    正負比平衡,避免官方切分本身的偏斜。
+
+    ### Returns:
+        **depMap (dict)**: {patient id, PHQ8_Binary label}
+        **s1_train_idx**: Stage1 train patient id (官方 train 的 80%)
+        **s1_val_idx**:   Stage1 val   patient id (官方 train 的 20%)
+    """
+    tr = pd.read_csv(TRAIN_CSV)
+
+    depMap = {}
+    for _, row in pd.concat([pd.read_csv(TRAIN_CSV), pd.read_csv(VAL_CSV)],
+                            ignore_index=True).iterrows():
+        depMap[int(row["Participant_ID"])] = int(row["PHQ8_Binary"])
+
+    patient_df = tr[["Participant_ID", "PHQ8_Binary"]].copy()
+    s1_tr_df, s1_val_df = train_test_split(
+        patient_df, test_size=0.2, random_state=seed,
+        stratify=patient_df["PHQ8_Binary"],
+    )
+
+    s1_train_idx = s1_tr_df["Participant_ID"].astype(int).tolist()
+    s1_val_idx = s1_val_df["Participant_ID"].astype(int).tolist()
+    return depMap, s1_train_idx, s1_val_idx
 
 
 def get_patient_ids(split: str):
-    _, train_idx, val_idx, test_idx = get_Split_and_GroundTrue()
+    _, train_idx, test_idx = get_Split_and_GroundTrue()
 
     if split == "train":
         return train_idx
-    elif split == "val":
-        return val_idx
     elif split == "test":
         return test_idx
     elif split == "all":
-        return train_idx + val_idx + test_idx
+        return train_idx + test_idx
     else:
         raise ValueError(f"unknown split: {split}")
 
@@ -147,8 +206,8 @@ def DISTILBERT(ds: str, ds_dir: str, device: str, split: str) -> None:
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(idx, poslist, neglist, neulist, f"DistilBert_{split}.jpg")
-    np.savez(f"DistilBert_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
+    draw(idx, poslist, neglist, neulist, f"DistilBert_{split}_bin.jpg")
+    np.savez(f"DistilBert_{split}_bin", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
 
 
 def draw(idx, poslist, neglist, neulist, out_path):
@@ -216,8 +275,8 @@ def WAV2VEC2(ds: str, ds_dir: str, device: str, split: str) -> None:
         poslist.append(Dict["pos"])
         neglist.append(Dict["neg"])
         neulist.append(Dict["neu"])
-    draw(idx, poslist, neglist, neulist, f"Wav2Vec2_{split}.jpg")
-    np.savez(f"Wav2Vec2_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
+    draw(idx, poslist, neglist, neulist, f"Wav2Vec2_{split}_bin.jpg")
+    np.savez(f"Wav2Vec2_{split}_bin", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx, dtype=np.int64))
     # breakpoint()
 
 def audioPreprosessing(ds: str, ds_dir: str, device: str, split: str):
@@ -262,7 +321,7 @@ def HOWNET_api(ds: str, ds_dir: str, device: str):
     OpenHowNet.download()
     hownet_dict = OpenHowNet.HowNetDict(init_sim=False)
     poslist, neglist, neulist = [], [], []
-    _,trDS,_,_=get_Split_and_GroundTrue()
+    _,trDS,_=get_Split_and_GroundTrue()
 
     for i in trDS:
         filePath = f"{ds_dir}/{i}_P/{i}_TRANSCRIPT.csv"
@@ -357,8 +416,8 @@ def HOWNET(ds: str, ds_dir: str, device: str, split: str):
         result_list.append(emoLabel)
     # print(result_list)
     # breakpoint()
-    draw(idx, poslist, neglist, neulist, f"HowNet_{split}.jpg")
-    np.savez(f"HowNet_{split}", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx,dtype=np.int64))
+    draw(idx, poslist, neglist, neulist, f"HowNet_{split}_bin.jpg")
+    np.savez(f"HowNet_{split}_bin", a=poslist, b=neglist, c=neulist, patientIdx=np.array(idx,dtype=np.int64))
 
 
 if __name__ == "__main__":
