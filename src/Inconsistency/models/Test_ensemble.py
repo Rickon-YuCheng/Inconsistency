@@ -1,10 +1,14 @@
 """
-Test_official.py
+Test_ensemble.py
 ================
-Test on DAIC-WOZ official dev set using a trained Stage2 ckpt.
-Supports both attn and hope_attention encoder types.
+Ensemble multiple Stage2 ckpts on DAIC-WOZ official dev set.
+Averages patient-level logit scores across all ckpts, then applies oracle threshold search.
 
-uv run src/Inconsistency/models/Test_official.py --stage2_ckpt weights/stage2_official/<ckpt>.pt
+uv run src/Inconsistency/models/Test_ensemble.py \
+    --stage2_ckpts weights/stage2_official/ckpt1.pt weights/stage2_official/ckpt2.pt ...
+
+Or use glob:
+    --stage2_ckpts $(ls weights/stage2_official/*103030*macroF1*.pt)
 """
 
 import argparse
@@ -38,7 +42,8 @@ DAIC_PSEUDO = "SegPseudoLabel_daic_distilbert_pair_bin.npz"
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage2_ckpt", type=str, required=True)
+    p.add_argument("--stage2_ckpts", type=str, nargs="+", required=True,
+                   help="One or more stage2 ckpt paths to ensemble")
     p.add_argument("--feat_dir", type=str, default=FEAT_DIR)
     p.add_argument("--daic_pseudo", type=str, default=DAIC_PSEUDO)
     p.add_argument("--batch_size", type=int, default=64)
@@ -51,7 +56,7 @@ def parse_args():
 
 
 # ============================================================
-# Model (mirrors Stage2_official)
+# Model
 # ============================================================
 class whole_model(nn.Module):
     def __init__(self, embd_size, nheads, atei_ckpt_sd,
@@ -178,6 +183,72 @@ class whole_model(nn.Module):
 
 
 # ============================================================
+# Model loader
+# ============================================================
+def load_model(ckpt_path, device):
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    hp   = ckpt.get("hparams") or ckpt.get("args", {})
+    sd   = ckpt["model_state_dict"]
+
+    print(f"  epoch={ckpt.get('epoch','?')} fold={ckpt.get('fold','?')} "
+          f"val_macro={ckpt.get('pat_macro_f1', -1):.4f}")
+
+    d_model      = int(hp.get("d_model", 256))
+    enc_layers   = int(hp.get("enc_layers", 1))
+    dropout      = float(hp.get("dropout", 0.3))
+    atei_dropout = float(hp.get("atei_dropout", 0.3))
+    alpha_init   = float(hp.get("alpha_init", 0.5))
+    no_atei      = bool(hp.get("no_atei", False))
+    no_text      = bool(hp.get("no_text", False))
+    encoder_type = str(hp.get("encoder_type", "attn"))
+    cms_periods  = tuple(hp.get("cms_periods", (1, 4)))
+    nhead        = 8 if d_model >= 256 else 4
+
+    if not no_atei:
+        atei_d_model    = sd["atei.a_in_proj.0.weight"].shape[0]
+        atei_enc_layers = enc_layers
+        atei_nhead      = nhead
+        stage1_ckpt_path = hp.get("stage1_ckpt")
+        if stage1_ckpt_path is None:
+            raise ValueError(f"[Error] no stage1_ckpt in hparams of {ckpt_path}")
+        stage1_ckpt = torch.load(stage1_ckpt_path, map_location="cpu", weights_only=False)
+        atei_sd = stage1_ckpt["model_state_dict"]
+    else:
+        atei_d_model = atei_enc_layers = atei_nhead = 0
+        atei_sd = {}
+
+    model = whole_model(
+        embd_size=d_model, nheads=nhead,
+        atei_ckpt_sd=atei_sd,
+        atei_d_model=atei_d_model, atei_nhead=atei_nhead,
+        atei_enc_layers=atei_enc_layers,
+        atei_dropout=atei_dropout, dropout=dropout,
+        enc_layers=enc_layers, alpha_init=alpha_init,
+        encoder_type=encoder_type, cms_periods=cms_periods,
+        no_atei=no_atei, no_text=no_text).to(device)
+
+    new_sd = {}
+    for k, v in sd.items():
+        if k.startswith("atei."):
+            new_sd[k] = v
+            continue
+        new_k = k.replace("a_transformer_enc.", "a_encoder.") \
+                  .replace("t_transformer_enc.", "t_encoder.")
+        new_sd[new_k] = v
+
+    missing, unexpected = model.load_state_dict(new_sd, strict=False)
+    real_missing = [k for k in missing if not k.startswith("atei.")]
+    real_unexpected = [k for k in unexpected if not k.startswith("atei.")]
+    if real_missing:
+        raise RuntimeError(f"Missing keys: {real_missing}")
+    if real_unexpected:
+        raise RuntimeError(f"Unexpected keys: {real_unexpected}")
+
+    model.eval()
+    return model
+
+
+# ============================================================
 # Dataset
 # ============================================================
 class TestSegIndex:
@@ -185,10 +256,6 @@ class TestSegIndex:
                  feat_dir=FEAT_DIR, daic_ds_root=DAIC_DS_ROOT):
         self.samples = []
         feat_dir = Path(feat_dir)
-        dpl = np.load(daic_npz)
-        atei_map = {(int(p), int(s)): int(l)
-                    for p, s, l in zip(dpl["patientIdx"],
-                                       dpl["segIdx"], dpl["label"])}
         for pid in dev_pids:
             csv_path = Path(daic_ds_root) / f"{pid}_P" / f"{pid}_TRANSCRIPT.csv"
             if not csv_path.exists():
@@ -206,22 +273,21 @@ class TestSegIndex:
             for list_idx, row in enumerate(df_p.itertuples()):
                 if list_idx >= n_valid:
                     break
-                seg_id = row.Index + 2
                 self.samples.append({
-                    "patient_id": pid, "seg_id": seg_id,
-                    "list_idx": list_idx,
-                    "dep_label": daic_depMap[pid],
+                    "patient_id": pid,
+                    "list_idx":   list_idx,
+                    "dep_label":  daic_depMap[pid],
                 })
         print(f"[TestSegIndex] total={len(self.samples)}")
 
 
 class TestSegDataset(Dataset):
     def __init__(self, sample_index, feat_dir, cache_size=16):
-        self.samples = sample_index.samples
+        self.samples  = sample_index.samples
         self.feat_dir = Path(feat_dir)
-        self._cache = {}
+        self._cache   = {}
         self._cache_order = []
-        self._cache_size = cache_size
+        self._cache_size  = cache_size
 
     def _load_patient(self, pid):
         if pid in self._cache:
@@ -240,8 +306,7 @@ class TestSegDataset(Dataset):
             del self._cache[self._cache_order.pop(0)]
         return self._cache[pid]
 
-    def __len__(self):
-        return len(self.samples)
+    def __len__(self): return len(self.samples)
 
     def __getitem__(self, idx):
         s = self.samples[idx]
@@ -264,15 +329,15 @@ def collate_fn(batch):
 
 
 # ============================================================
-# Test
+# Inference: collect per-patient scores from one model
 # ============================================================
 @torch.inference_mode()
-def test(model, loader, device):
+def collect_scores(model, loader, device):
     model.eval()
     per_patient_scores = defaultdict(list)
-    per_patient_true = {}
+    per_patient_true   = {}
 
-    for batch in tqdm(loader, desc="Test", unit="batch", leave=False):
+    for batch in tqdm(loader, desc="  Infer", unit="batch", leave=False):
         xa    = batch["xa"].to(device, non_blocking=True)
         xt    = batch["xt"].to(device, non_blocking=True)
         aMask = batch["aMask"].to(device, non_blocking=True)
@@ -288,30 +353,44 @@ def test(model, loader, device):
             per_patient_scores[pid].append(s)
             per_patient_true.setdefault(pid, t)
 
-    pids_list = list(per_patient_scores.keys())
-    pat_means = np.array([np.mean(per_patient_scores[p]) for p in pids_list])
-    pat_true  = np.array([per_patient_true[p] for p in pids_list])
-    # oracle threshold search
+    # per-patient mean score for this model
+    pids_list  = list(per_patient_scores.keys())
+    pat_scores = np.array([np.mean(per_patient_scores[p]) for p in pids_list])
+    pat_true   = np.array([per_patient_true[p] for p in pids_list])
+    return pids_list, pat_scores, pat_true
+
+
+def oracle_threshold(pat_scores, pat_true):
     best_thr, best_f1 = 0.0, -1.0
-    for thr in np.linspace(pat_means.min(), pat_means.max(), 200):
-        pred = (pat_means >= thr).astype(int)
-        f1 = f1_score(pat_true, pred, average="macro", labels=[0,1], zero_division=0)
+    for thr in np.linspace(pat_scores.min(), pat_scores.max(), 300):
+        pred = (pat_scores >= thr).astype(int)
+        f1 = f1_score(pat_true, pred, average="macro", labels=[0, 1], zero_division=0)
         if f1 > best_f1:
             best_f1, best_thr = f1, thr
-    pat_pred = (pat_means >= best_thr).astype(int)
-    print(f"[Oracle] best_thr={best_thr:.4f}  MacroF1={best_f1:.4f}")
+    return best_thr, best_f1
 
-    return {
-        "pat_true": pat_true, "pat_pred": pat_pred,
-        "pat_acc":      (pat_true == pat_pred).mean(),
-        "pat_macro_f1": f1_score(pat_true, pat_pred, average="macro",
-                                 labels=[0, 1], zero_division=0),
-        "pat_pre":      precision_score(pat_true, pat_pred, average="binary",
-                                        pos_label=1, zero_division=0),
-        "pat_rec":      recall_score(pat_true, pat_pred, average="binary",
-                                     pos_label=1, zero_division=0),
-        "n_patients": len(pids_list),
-    }
+
+def report(pat_scores, pat_true, thr, label=""):
+    pat_pred = (pat_scores >= thr).astype(int)
+    macro = f1_score(pat_true, pat_pred, average="macro", labels=[0,1], zero_division=0)
+    pre   = precision_score(pat_true, pat_pred, average="binary", pos_label=1, zero_division=0)
+    rec   = recall_score(pat_true, pat_pred, average="binary", pos_label=1, zero_division=0)
+    acc   = (pat_true == pat_pred).mean()
+    print(f"\n{'='*60}")
+    print(f"RESULT {label}")
+    print(f"{'='*60}")
+    print(f"n_patients : {len(pat_true)}")
+    print(f"Threshold  : {thr:.4f}")
+    print(f"Accuracy   : {acc:.4f}")
+    print(f"MacroF1    : {macro:.4f}")
+    print(f"Precision  : {pre:.4f}")
+    print(f"Recall     : {rec:.4f}")
+    print(confusion_matrix(pat_true, pat_pred, labels=[0, 1]))
+    print(classification_report(pat_true, pat_pred,
+                                labels=[0, 1],
+                                target_names=["healthy(0)", "depressed(1)"],
+                                digits=4, zero_division=0))
+    return macro
 
 
 # ============================================================
@@ -320,84 +399,6 @@ def test(model, loader, device):
 def main():
     set_seed(ARGS.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    ckpt = torch.load(ARGS.stage2_ckpt, map_location="cpu", weights_only=False)
-    hp   = ckpt.get("hparams") or ckpt.get("args", {})
-    sd   = ckpt["model_state_dict"]
-
-    print(f"[Ckpt] epoch={ckpt.get('epoch','?')} "
-          f"fold={ckpt.get('fold','?')} "
-          f"pat_macro_f1={ckpt.get('pat_macro_f1', ckpt.get('best_pat_macro_f1', -1)):.4f}")
-    print(f"[Hparams] {hp}")
-
-    d_model      = int(hp.get("d_model", 256))
-    enc_layers   = int(hp.get("enc_layers", 1))
-    dropout      = float(hp.get("dropout", 0.3))
-    atei_dropout = float(hp.get("atei_dropout", 0.3))
-    alpha_init   = float(hp.get("alpha_init", 0.5))
-    no_atei      = bool(hp.get("no_atei", False))
-    no_text      = bool(hp.get("no_text", False))
-    encoder_type = str(hp.get("encoder_type", "attn"))
-    cms_periods  = tuple(hp.get("cms_periods", (1, 4)))
-    nhead        = 8 if d_model >= 256 else 4
-
-    if not no_atei:
-        # 從 stage2 ckpt 裡取 atei 的 input dim
-        atei_d_model    = sd["atei.a_in_proj.0.weight"].shape[0]
-        atei_enc_layers = enc_layers
-        atei_nhead      = nhead
-
-        # 直接從 stage1 ckpt 重新 load atei weights，避免 key 命名不一致問題
-        stage1_ckpt_path = hp.get("stage1_ckpt")
-        if stage1_ckpt_path is None:
-            raise ValueError("[Error] hparams 裡沒有 stage1_ckpt，無法重建 ATEI")
-        print(f"[ATEI] loading from stage1 ckpt: {stage1_ckpt_path}")
-        stage1_ckpt = torch.load(stage1_ckpt_path, map_location="cpu", weights_only=False)
-        atei_sd = stage1_ckpt["model_state_dict"]
-    else:
-        atei_d_model = atei_enc_layers = atei_nhead = 0
-        atei_sd = {}
-
-    model = whole_model(
-        embd_size=d_model, nheads=nhead,
-        atei_ckpt_sd=atei_sd,
-        atei_d_model=atei_d_model, atei_nhead=atei_nhead,
-        atei_enc_layers=atei_enc_layers,
-        atei_dropout=atei_dropout, dropout=dropout,
-        enc_layers=enc_layers, alpha_init=alpha_init,
-        encoder_type=encoder_type, cms_periods=cms_periods,
-        no_atei=no_atei, no_text=no_text).to(device)
-
-    # top-level key rename: ckpt 存的是 a_transformer_enc/t_transformer_enc
-    # 但 whole_model 定義用 a_encoder/t_encoder
-    # atei.* 的部分已從 stage1 ckpt 直接 load，不需要從 sd 裡取
-    new_sd = {}
-    for k, v in sd.items():
-        if k.startswith("atei."):
-            # atei 已由 stage1 ckpt 初始化，跳過（用 strict=False 處理）
-            new_sd[k] = v
-            continue
-        new_k = k.replace("a_transformer_enc.", "a_encoder.") \
-                  .replace("t_transformer_enc.", "t_encoder.")
-        new_sd[new_k] = v
-
-    # strict=False 允許 atei.* key 命名不一致，但 whole_model 自身的 key 必須全對
-    missing, unexpected = model.load_state_dict(new_sd, strict=False)
-    if missing:
-        # 過濾掉 atei.* 的 missing（已從 stage1 ckpt load）
-        real_missing = [k for k in missing if not k.startswith("atei.")]
-        if real_missing:
-            raise RuntimeError(f"[Error] Missing keys (non-atei): {real_missing}")
-        print(f"[Load] atei keys skipped from stage2 sd (loaded from stage1 ckpt): {len(missing)}")
-    if unexpected:
-        atei_unexpected = [k for k in unexpected if k.startswith("atei.")]
-        real_unexpected = [k for k in unexpected if not k.startswith("atei.")]
-        if real_unexpected:
-            raise RuntimeError(f"[Error] Unexpected keys (non-atei): {real_unexpected}")
-        print(f"[Load] atei keys in stage2 sd ignored: {len(atei_unexpected)}")
-
-    model.eval()
-    print("[Load] model weights loaded successfully")
 
     daic_depMap, _, dev_pids = get_Split_and_GroundTrue()
     print(f"[Dev] {len(dev_pids)} patients")
@@ -412,21 +413,39 @@ def main():
         pin_memory=True, persistent_workers=(ARGS.num_workers > 0),
         prefetch_factor=(ARGS.prefetch_factor if ARGS.num_workers > 0 else None))
 
-    r = test(model, dev_loader, device)
+    all_scores = []  # list of (pids_list, pat_scores) per model
+    pat_true   = None
 
-    print("\n" + "=" * 60)
-    print("TEST RESULT (official dev set)")
-    print("=" * 60)
-    print(f"n_patients : {r['n_patients']}")
-    print(f"Accuracy   : {r['pat_acc']:.4f}")
-    print(f"MacroF1    : {r['pat_macro_f1']:.4f}")
-    print(f"Precision  : {r['pat_pre']:.4f}")
-    print(f"Recall     : {r['pat_rec']:.4f}")
-    print(confusion_matrix(r["pat_true"], r["pat_pred"], labels=[0, 1]))
-    print(classification_report(r["pat_true"], r["pat_pred"],
-                                labels=[0, 1],
-                                target_names=["healthy(0)", "depressed(1)"],
-                                digits=4, zero_division=0))
+    for i, ckpt_path in enumerate(ARGS.stage2_ckpts):
+        print(f"\n[Model {i+1}/{len(ARGS.stage2_ckpts)}] {Path(ckpt_path).name}")
+        model = load_model(ckpt_path, device)
+        pids_list, pat_scores, pt = collect_scores(model, dev_loader, device)
+        if pat_true is None:
+            pat_true = pt
+            ref_pids = pids_list
+        # align to ref_pids order
+        pid2score = dict(zip(pids_list, pat_scores))
+        scores_aligned = np.array([pid2score[p] for p in ref_pids])
+        all_scores.append(scores_aligned)
+
+        # per-model oracle
+        thr, f1 = oracle_threshold(scores_aligned, pat_true)
+        print(f"  -> single model oracle MacroF1={f1:.4f}  thr={thr:.4f}")
+
+        del model
+        torch.cuda.empty_cache()
+
+    # ---- Ensemble ----
+    print(f"\n[Ensemble] {len(all_scores)} models")
+
+    # simple mean
+    ensemble_scores = np.mean(all_scores, axis=0)
+    thr_mean, f1_mean = oracle_threshold(ensemble_scores, pat_true)
+    print(f"[Oracle] best_thr={thr_mean:.4f}  MacroF1={f1_mean:.4f}")
+    report(ensemble_scores, pat_true, thr_mean, label="Ensemble (mean, oracle thr)")
+
+    # fixed thr=0.0
+    report(ensemble_scores, pat_true, 0.0, label="Ensemble (mean, thr=0.0)")
 
 
 if __name__ == "__main__":
