@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # ============================================================
 D_MODEL = 1024
 NHEAD = 8
-LR = 1e-4
+LR = 1e-5
 EPOCHS = 30
 TRANSFORMER_ENC_LAYERS = 12
 BATCH_SIZE = 64

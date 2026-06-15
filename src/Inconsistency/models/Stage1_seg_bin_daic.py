@@ -1,4 +1,7 @@
 """
+uv run src/Inconsistency/models/Stage1_seg_bin_daic.py --use_class_weight
+"""
+"""
 Stage1_seg_bin_daic.py
 ======================
 Stage1 ATEI segment-level training, DAIC-WOZ only.
@@ -72,7 +75,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     p.add_argument("--dropout", type=float, default=0.3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
-    p.add_argument("--label_smoothing", type=float, default=0.05)
+    p.add_argument("--label_smoothing", type=float, default=0.0)
     p.add_argument("--daic_pseudo_npz", type=str, default=DAIC_PSEUDO_NPZ)
     p.add_argument("--atei_mode", type=str, default="hard",
                    choices=["hard", "soft_cosine"],

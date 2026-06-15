@@ -1,19 +1,8 @@
 """
-uv run src/Inconsistency/models/Stage2_seg_bin_daic.py --d_model 256 --enc_layers 1 --lr 1e-4 --weight_decay 1e-4 --dropout 0.3 --atei_dropout 0.3 --lambda_atei 0.7 --alpha_init 0.5 --batch_size 64 --epochs 30 --kfold 3 --use_class_weight
-"""
-"""
-Stage2_seg_bin_daic.py — segment-level depression detection, DAIC-WOZ only.
-
-跟 Stage2_seg_bin_daic_eatd.py 的差別:
-  移除所有 EATD 邏輯 (eatd_loss_scale, eatd_depMap, get_eatd_train_vols)
-  Stage1 ckpt 來自 Stage1_seg_bin_daic
-  FEAT_DIR  -> datasets/Feat_seg_bin_daic/
-  SAVE_DIR  -> weights/stage2_seg_bin_daic/
-  wandb project -> Stage2 seg_bin daic
-
-Val
----
-  純 DAIC kfold val (segment-level → patient majority vote → patient F1)。
+Stage2_official.py
+==================
+Stage2 depression detection, DAIC-WOZ official train set 3-fold CV.
+Train/val on official train set (3-fold), test separately via Test_official.py.
 """
 
 import os
@@ -32,39 +21,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import (classification_report, confusion_matrix,
                              f1_score, precision_score, recall_score)
+from sklearn.model_selection import StratifiedKFold
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from tqdm import tqdm
 
 import wandb
 
-from Inconsistency.datasets.Incon_seg_bin import get_stage1_kfold
+from Inconsistency.datasets.Incon_seg_bin import get_Split_and_GroundTrue
 from Inconsistency.models.Stage1_seg_bin_daic import atei as Stage1ATEI
 from Inconsistency.utils import Timer, numpy_random_init, set_seed
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-
 
 # ============================================================
 # Defaults
 # ============================================================
 D_MODEL = 256
 NHEAD = 8
-LR = 1e-4
+LR = 5e-4
 EPOCHS = 30
 TRANSFORMER_ENC_LAYERS = 1
 BATCH_SIZE = 64
 
 DROPOUT = 0.3
-ATEI_DROPOUT = 0.3
-WEIGHT_DECAY = 1e-4
+ATEI_DROPOUT = 0.5
+WEIGHT_DECAY = 0
 LABEL_SMOOTHING = 0.0
 
 LAMBDA_ATEI = 0.1
-ALPHA_INIT = 0.5
+ALPHA_INIT = 0.7
 LAMBDA_AUX = 0.1
 N_CLASSES = 2
-MIN_SAVE_F1 = 0.40
+MIN_SAVE_F1 = 0.60
 
 DAIC_PSEUDO = "SegPseudoLabel_daic_distilbert_pair_bin.npz"
 FEAT_DIR = "datasets/Feat_seg_bin_daic"
@@ -73,8 +62,7 @@ DAIC_DS_ROOT = "datasets/DAICWOZ"
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage1_ckpt", type=str, default=None,
-                   help="Stage1_seg_bin_daic ckpt path")
+    p.add_argument("--stage1_ckpt", type=str, default=None)
     p.add_argument("--d_model", type=int, default=D_MODEL)
     p.add_argument("--nhead", type=int, default=NHEAD)
     p.add_argument("--lr", type=float, default=LR)
@@ -93,7 +81,7 @@ def parse_args():
     p.add_argument("--accum_steps", type=int, default=1)
     p.add_argument("--daic_pseudo", type=str, default=DAIC_PSEUDO)
     p.add_argument("--feat_dir", type=str, default=FEAT_DIR)
-    p.add_argument("--save_dir", type=str, default="weights/stage2_seg_bin_daic")
+    p.add_argument("--save_dir", type=str, default="weights/stage2_official")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=10)
     p.add_argument("--num_workers", type=int, default=4)
@@ -102,26 +90,23 @@ def parse_args():
     p.add_argument("--freeze_atei", action="store_true")
     p.add_argument("--atei_lr_scale", type=float, default=0.1)
     p.add_argument("--no_atei_loss", action="store_true")
-    p.add_argument("--no_atei", action="store_true",
-                   help="純 A+T baseline，不載入 Stage1 ckpt，不用 ATEI branch")
-    p.add_argument("--no_text", action="store_true",
-                   help="純 audio baseline，不用 text branch")
+    p.add_argument("--no_atei", action="store_true")
+    p.add_argument("--no_text", action="store_true")
     p.add_argument("--use_sampler", action="store_true")
     p.add_argument("--use_class_weight", action="store_true")
     p.add_argument("--use_wandb", action="store_true")
-    p.add_argument("--wandb_project", type=str, default="Stage2 seg_bin daic")
+    p.add_argument("--wandb_project", type=str, default="Stage2 official")
     p.add_argument("--wandb_name", type=str, default=None)
     p.add_argument("--kfold", type=int, default=3)
     p.add_argument("--print_norm", action="store_true")
     p.add_argument("--min_save_f1", type=float, default=MIN_SAVE_F1)
     p.add_argument("--max_audio_frames", type=int, default=500)
-    p.add_argument("--aug_min_frames", type=int, default=50,
-                   help="training 時隨機截斷 audio 的最小 frame 數，0=不做 augmentation")
+    p.add_argument("--aug_min_frames", type=int, default=0)
     return p.parse_args()
 
 
 # ============================================================
-# Model
+# Model (same as Stage2_seg_bin_daic)
 # ============================================================
 class whole_model(nn.Module):
     def __init__(self, embd_size, nheads, atei_ckpt_path=None,
@@ -151,7 +136,6 @@ class whole_model(nn.Module):
                 t_enc, num_layers=enc_layers, enable_nested_tensor=False)
             self.t_post_norm = nn.LayerNorm(embd_size)
 
-        # ATEI branch (skip if no_atei)
         if not no_atei:
             ckpt = torch.load(atei_ckpt_path, map_location="cpu")
             sd = ckpt["model_state_dict"]
@@ -178,7 +162,6 @@ class whole_model(nn.Module):
         if no_text:
             print("[Model] no_text=True: text branch disabled")
 
-        # attention pooling for audio (and text if present)
         self.a_attn_pool = nn.Linear(embd_size, 1)
         if not no_text:
             self.t_attn_pool = nn.Linear(embd_size, 1)
@@ -210,16 +193,11 @@ class whole_model(nn.Module):
             aux_t = None
 
         if not self.no_atei:
-            eE_raw, atei_logits = self.atei(xa, xt, aMask, tMask)
+            eE_raw, atei_logits, _ = self.atei(xa, xt, aMask, tMask)
             eE = self.atei_proj(eE_raw)
             alpha = torch.clamp(self.alpha, 0.0, 2.0) * alpha_gate
             eE = eE * alpha
             aux_e = self.aux_e_head(eE)
-            if self.training and self.print_norm:
-                print(f"eA={eA.norm(dim=-1).mean().item():.4f} "
-                      f"eE={eE.norm(dim=-1).mean().item():.4f} "
-                      f"eT={eT.norm(dim=-1).mean().item():.4f} "
-                      f"alpha={float(self.alpha.detach()):.4f} (gate={alpha_gate:.3f})")
             parts = [eA, eE] + ([eT] if eT is not None else [])
             eFusion = torch.cat(parts, dim=1)
         else:
@@ -230,7 +208,6 @@ class whole_model(nn.Module):
 
         h = self.dropout(F.relu(self.fc1(eFusion)))
         h = self.dropout(F.relu(self.fc2(h)))
-        # h = self.dropout(F.relu(self.fc3(h)))
         dep_logits = self.dep_head(h)
         return atei_logits, dep_logits, (aux_a, aux_t, aux_e)
 
@@ -243,17 +220,15 @@ class whole_model(nn.Module):
 
     @staticmethod
     def _attn_pool(x, attn_head, mask):
-        """Attention pooling: learn which frames are most important."""
-        # x: [B, T, D], attn_head: Linear(D, 1)
-        scores = attn_head(x).squeeze(-1)   # [B, T]
+        scores = attn_head(x).squeeze(-1)
         if mask is not None:
             scores = scores.masked_fill(mask, float('-inf'))
-        weights = torch.softmax(scores, dim=-1).unsqueeze(-1)  # [B, T, 1]
-        return (x * weights).sum(dim=1)   # [B, D]
+        weights = torch.softmax(scores, dim=-1).unsqueeze(-1)
+        return (x * weights).sum(dim=1)
 
 
 # ============================================================
-# Sample Index (DAIC only)
+# Sample Index
 # ============================================================
 class Stage2SegIndex:
     def __init__(self, daic_pids, daic_depMap, daic_npz,
@@ -281,7 +256,6 @@ class Stage2SegIndex:
                 if len(xa) != len(xt):
                     print(f"[warn] DAIC {pid}: a={len(xa)} t={len(xt)}, "
                           f"truncate to {n_valid}")
-
                 df = pd.read_csv(csv_path, sep="\t")
                 df_p = df[df.speaker == "Participant"].dropna(subset=["value"]).copy()
                 for list_idx, row in enumerate(df_p.itertuples()):
@@ -364,7 +338,6 @@ def collate_fn(batch, training=False):
     for b in batch:
         frames = b["xa"][:max_frames]
         if training and aug_min > 0 and len(frames) > aug_min:
-            # randomly truncate to [aug_min, len(frames)]
             keep = torch.randint(aug_min, len(frames) + 1, (1,)).item()
             frames = frames[:keep]
         xa_list.append(frames)
@@ -385,7 +358,6 @@ def collate_fn(batch, training=False):
 def build_dep_sampler(index, seed):
     labs = np.array([s["dep_label"] for s in index.samples])
     cnt = np.bincount(labs, minlength=2)
-    print(f"[sampler] dep counts: {cnt}")
     w = (1.0 / cnt)[labs]
     g = torch.Generator(); g.manual_seed(seed)
     return WeightedRandomSampler(weights=w, num_samples=len(w),
@@ -428,7 +400,6 @@ def train_one_epoch(model, loader, loss_dep_none, loss_atei, opt, scaler,
                             dtype=torch.bfloat16):
             atei_logits, dep_logits, (aux_a, aux_t, aux_e) = model(
                 xa, xt, aMask, tMask, alpha_gate=alpha_gate)
-
             L_dep = loss_dep_none(dep_logits, dep).mean()
             if atei_logits is not None:
                 L_atei = (loss_atei(atei_logits, atei_lab)
@@ -472,8 +443,6 @@ def train_one_epoch(model, loader, loss_dep_none, loss_atei, opt, scaler,
 
     return {"dep_loss": tot_dep/max(n,1), "atei_loss": tot_atei/max(n,1),
             "tot_loss": tot/max(n,1), "dep_acc": correct_dep/max(n,1),
-            "seg_dist_true": Counter(seg_true),
-            "seg_dist_pred": Counter(seg_pred),
             "atei_acc": correct_atei / max(valid_atei_n, 1)}
 
 
@@ -512,7 +481,6 @@ def validate(model, loader, loss_dep, device, fold_id):
     pat_true  = np.array([per_patient_true[p] for p in pids_list])
     pat_pred  = (pat_means >= 0.0).astype(int)
 
-    # oracle threshold: brute-force search best threshold on val set
     best_oracle_f1 = 0.0; best_thr = 0.0
     for thr in np.arange(pat_means.min(), pat_means.max(), 0.05):
         pred_thr = (pat_means >= thr).astype(int)
@@ -524,9 +492,6 @@ def validate(model, loader, loss_dep, device, fold_id):
     seg_true = np.array(seg_true); seg_pred = np.array(seg_pred)
     return {
         "loss": tot_loss/max(n,1),
-        "seg_acc": (seg_true == seg_pred).mean(),
-        "seg_bin_f1": f1_score(seg_true, seg_pred, average="binary",
-                               pos_label=1, zero_division=0),
         "seg_macro_f1": f1_score(seg_true, seg_pred, average="macro",
                                  labels=[0,1], zero_division=0),
         "pat_acc": (pat_true == pat_pred).mean(),
@@ -548,20 +513,17 @@ def validate(model, loader, loss_dep, device, fold_id):
 # ============================================================
 # Per-fold runner
 # ============================================================
-def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
-                 daic_depMap, run_id, device):
+def run_one_fold(fold_id, train_pids, val_pids, daic_depMap, run_id, device):
     set_seed(ARGS.seed + fold_id)
     save_dir = Path(ARGS.save_dir); save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*60}\nFOLD {fold_id}\n{'='*60}")
-    train_idx = Stage2SegIndex(daic_train_pids, daic_depMap,
+    train_idx = Stage2SegIndex(train_pids, daic_depMap,
                                ARGS.daic_pseudo, feat_dir=ARGS.feat_dir)
-    val_idx   = Stage2SegIndex(daic_val_pids,   daic_depMap,
+    val_idx   = Stage2SegIndex(val_pids,   daic_depMap,
                                ARGS.daic_pseudo, feat_dir=ARGS.feat_dir)
     print(f"[train] dep dist: {train_idx.get_dep_counts()}")
     print(f"[val]   dep dist: {val_idx.get_dep_counts()}")
-    a_cnt, a_drop = train_idx.get_atei_counts()
-    print(f"[train] atei dist (excl -1): {a_cnt}, dropped: {a_drop}")
 
     train_ds = Stage2SegDataset(train_idx, feat_dir=ARGS.feat_dir,
                                 cache_size=ARGS.cache_size)
@@ -602,11 +564,9 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
              "weight_decay": ARGS.weight_decay},
             {"params": other_params, "lr": ARGS.lr,
              "weight_decay": ARGS.weight_decay}])
-        print(f"[opt] ATEI lr={ARGS.lr*ARGS.atei_lr_scale:.2e}  other lr={ARGS.lr:.2e}")
     else:
         opt = torch.optim.Adam(model.parameters(), lr=ARGS.lr,
                                weight_decay=ARGS.weight_decay)
-        print(f"[opt] no_atei baseline lr={ARGS.lr:.2e}")
 
     class_w = build_class_weight(train_idx, device) if ARGS.use_class_weight else None
     loss_dep = nn.CrossEntropyLoss(weight=class_w,
@@ -619,9 +579,8 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
     scaler = torch.GradScaler("cuda")
 
     run_name = (ARGS.wandb_name + f"_fold{fold_id}") if ARGS.wandb_name else (
-        f"stage2seg_d_seed{ARGS.seed}_lr{ARGS.lr:.0e}_"
-        f"la{ARGS.lambda_atei:.2f}_a{ARGS.alpha_init:.2f}_"
-        f"d{ARGS.d_model}_fold{fold_id}_{run_id}")
+        f"stage2_official_seed{ARGS.seed}_lr{ARGS.lr:.0e}_"
+        f"la{ARGS.lambda_atei:.2f}_d{ARGS.d_model}_fold{fold_id}_{run_id}")
     if ARGS.use_wandb:
         wandb.init(project=ARGS.wandb_project, name=run_name, reinit=True,
                    config={**vars(ARGS), "fold": fold_id})
@@ -639,7 +598,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
         print("=" * 80)
         alpha_str = f"α={float(model.alpha.detach()):.4f} " if not ARGS.no_atei else ""
         print(f"[Fold {fold_id}] Epoch [{epoch}/{ARGS.epochs}]  "
-              f"{alpha_str}λ={cur_lambda:.4f} gate={alpha_gate:.3f}")
+              f"{alpha_str}λ={cur_lambda:.4f}")
 
         tr = train_one_epoch(model, train_loader, loss_dep_none, loss_atei,
                              opt, scaler, device, epoch, ARGS.epochs,
@@ -647,11 +606,8 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
                              lambda_aux=ARGS.lambda_aux, alpha_gate=alpha_gate)
         v = validate(model, val_loader, loss_dep, device, fold_id)
 
-        print(f"[Train] dep_loss={tr['dep_loss']:.4f} "
-              f"atei_loss={tr['atei_loss']:.4f} tot={tr['tot_loss']:.4f} "
-              f"dep_acc={tr['dep_acc']:.4f} atei_acc={tr['atei_acc']:.4f}")
-        print(f"[Val ] seg acc={v['seg_acc']:.4f} "
-              f"binF1={v['seg_bin_f1']:.4f} macroF1={v['seg_macro_f1']:.4f}")
+        print(f"[Train] dep_loss={tr['dep_loss']:.4f} tot={tr['tot_loss']:.4f} "
+              f"dep_acc={tr['dep_acc']:.4f}")
         print(f"[Val ] patient(n={v['n_patients']}) acc={v['pat_acc']:.4f} "
               f"binF1={v['pat_bin_f1']:.4f} macroF1={v['pat_macro_f1']:.4f} "
               f"pre={v['pat_pre']:.4f} rec={v['pat_rec']:.4f}")
@@ -669,7 +625,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
         if v["pat_bin_f1"] > best_pat_bin:
             best_pat_bin = v["pat_bin_f1"]
             if best_pat_bin > ARGS.min_save_f1:
-                ckpt = (f"stage2seg_d_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
+                ckpt = (f"stage2_official_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
                         f"best_patBinF1_{best_pat_bin:.4f}_ep{epoch:03d}_"
                         f"lr{ARGS.lr:.0e}_d{ARGS.d_model}.pt")
                 torch.save({
@@ -685,7 +641,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
         if v["pat_macro_f1"] > best_pat_macro:
             best_pat_macro = v["pat_macro_f1"]; no_improve = 0
             if best_pat_macro > ARGS.min_save_f1:
-                ckpt = (f"stage2seg_d_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
+                ckpt = (f"stage2_official_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
                         f"best_patMacroF1_{best_pat_macro:.4f}_ep{epoch:03d}_"
                         f"lr{ARGS.lr:.0e}_d{ARGS.d_model}.pt")
                 torch.save({
@@ -708,21 +664,14 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
                 "epoch": epoch,
                 "alpha": float(model.alpha.detach()) if not ARGS.no_atei else 0.0,
                 "train/dep_loss": tr["dep_loss"],
-                "train/atei_loss": tr["atei_loss"],
                 "train/tot_loss": tr["tot_loss"],
                 "train/dep_acc": tr["dep_acc"],
-                "val/loss": v["loss"],
-                "val/seg_bin_f1": v["seg_bin_f1"],
-                "val/seg_macro_f1": v["seg_macro_f1"],
                 "val/pat_bin_f1": v["pat_bin_f1"],
                 "val/pat_macro_f1": v["pat_macro_f1"],
-                "val/pat_acc": v["pat_acc"],
-                "val/pat_pre": v["pat_pre"],
-                "val/pat_rec": v["pat_rec"],
+                "val/oracle_macro_f1": v["oracle_macro_f1"],
                 "best/pat_bin_f1": best_pat_bin,
                 "best/pat_macro_f1": best_pat_macro,
-                "no_improve": no_improve,
-                "train/cur_lambda": cur_lambda})
+                "no_improve": no_improve})
 
         if no_improve >= ARGS.patience:
             print(f"[EarlyStop] Fold {fold_id} stop ep {epoch}, "
@@ -732,7 +681,8 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids,
 
     if ARGS.use_wandb:
         wandb.finish()
-    return {"pat_bin_f1": best_pat_bin, "pat_macro_f1": best_pat_macro, "oracle_macro_f1": best_oracle}
+    return {"pat_bin_f1": best_pat_bin, "pat_macro_f1": best_pat_macro,
+            "oracle_macro_f1": best_oracle}
 
 
 # ============================================================
@@ -743,10 +693,20 @@ def main():
     timer = Timer()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    daic_depMap, folds = get_stage1_kfold(n_splits=max(ARGS.kfold, 2),
-                                          seed=ARGS.seed)
-    if ARGS.kfold <= 1:
-        folds = folds[:1]
+    # 官方 train set，用 StratifiedKFold 切三折
+    daic_depMap, train_pids, _ = get_Split_and_GroundTrue()
+    train_pids = np.array(train_pids)
+    labels = np.array([daic_depMap[p] for p in train_pids])
+
+    skf = StratifiedKFold(n_splits=ARGS.kfold, shuffle=True,
+                          random_state=ARGS.seed)
+    folds = []
+    for fold_id, (tr_idx, val_idx) in enumerate(skf.split(train_pids, labels)):
+        folds.append({
+            "fold": fold_id,
+            "train": train_pids[tr_idx].tolist(),
+            "val":   train_pids[val_idx].tolist(),
+        })
 
     fold_results = []
     for f in folds:
@@ -758,7 +718,7 @@ def main():
               f"oracleMacroF1={r['oracle_macro_f1']:.4f}")
 
     print("\n" + "="*60)
-    print("K-FOLD RESULT (Stage2 seg_bin daic)")
+    print("K-FOLD RESULT (Stage2 official train set)")
     print("="*60)
     for i, r in enumerate(fold_results):
         print(f"Fold {i}: patBinF1={r['pat_bin_f1']:.4f}  "
@@ -767,9 +727,9 @@ def main():
     b = np.array([r["pat_bin_f1"] for r in fold_results])
     m = np.array([r["pat_macro_f1"] for r in fold_results])
     o = np.array([r["oracle_macro_f1"] for r in fold_results])
-    print(f"\nMean patBinF1   : {b.mean():.4f} +/- {b.std():.4f}")
-    print(f"Mean patMacroF1 : {m.mean():.4f} +/- {m.std():.4f}")
-    print(f"Mean oracleMacroF1: {o.mean():.4f} +/- {o.std():.4f}")
+    print(f"\nMean patBinF1      : {b.mean():.4f} +/- {b.std():.4f}")
+    print(f"Mean patMacroF1    : {m.mean():.4f} +/- {m.std():.4f}")
+    print(f"Mean oracleMacroF1 : {o.mean():.4f} +/- {o.std():.4f}")
     print(f"\nTotal time: {timer}")
 
 

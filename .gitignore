@@ -14,6 +14,8 @@ pretrained_models/
 wav2vec2_checkpoints/
 weights/
 nested_learning/
+git-folder.tar.gz
+transcripts.tar.gz
 
 # --- 圖 ---
 *.jpg
