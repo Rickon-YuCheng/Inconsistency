@@ -5,7 +5,7 @@ Stage2_daic_eatd.py — joint DAIC-WOZ + EATD Stage2 depression detection
 原版 Stage2Main_bin.py 的差異:
 - Stage1 ckpt: Stage1_daic_eatd 訓出來的
 - feature 路徑: datasets/Feat_daic_eatd/
-- train = DAIC-train + EATD-train
+- train = DAIC-train + EATD-train (或純 DAIC-train, 若 --no_eatd)
 - val   = DAIC-val (官方 dev) + EATD-val (分開桶)
 - model selection: DAIC val macro F1 (B1)
 - 額外記錄 EATD val macro F1 (B2)
@@ -13,6 +13,10 @@ Stage2_daic_eatd.py — joint DAIC-WOZ + EATD Stage2 depression detection
                 datasets/Feat_daic_eatd/PseudoLabel_daic_zdist_q30_70.npz  (daic val)
                 datasets/Feat_daic_eatd/PseudoLabel_eatd_val_zdist_q30_70.npz (eatd val)
 - save_dir: weights/stage2-daic-eatd
+
+修正紀錄:
+  1. 新增 --no_eatd flag: 純 DAIC-train, 不混 EATD
+  2. encoder_type choices 與 model 判斷對齊: "attn" / "hope"（原本誤寫 "hope_attention"，必報錯）
 """
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -55,7 +59,7 @@ LAMBDA_ATEI  = 0.1
 ALPHA_INIT   = 0.5
 PATIENCE     = 500
 ACCUM_STEPS  = 1
-ENCODER_TYPE = "attn"
+ENCODER_TYPE = "hope"
 CMS_PERIODS  = (1, 4)
 CMS_HIDDEN_MULTIPLIER = 4
 CMS_ONLINE_UPDATES = False
@@ -92,11 +96,13 @@ def parse_args():
     parser.add_argument("--low_q",        type=float, default=30)
     parser.add_argument("--high_q",       type=float, default=70)
     parser.add_argument("--encoder_type",  type=str,   default=ENCODER_TYPE,
-                        choices=["attn", "hope_attention"])
+                        choices=["attn", "hope"])
     parser.add_argument("--cms_periods",  type=int, nargs="+", default=list(CMS_PERIODS))
     parser.add_argument("--cms_hidden_multiplier", type=int, default=CMS_HIDDEN_MULTIPLIER)
     parser.add_argument("--eatd_loss_scale", type=float, default=0.5,
                         help="Loss weight for EATD samples (dep+aux only). 1.0=equal, 0=ignore.")
+    parser.add_argument("--no_eatd",      action="store_true",
+                        help="純 DAIC-train，不混入 EATD train 資料")
     parser.add_argument("--kfold",        type=int,   default=0,
                         help="StratifiedKFold over DAIC-train only. <=1 = single run.")
     return parser.parse_args()
@@ -140,7 +146,7 @@ def _read_eatd_dep(vol_dir: Path, cutoff: float = 53.0):
 
 class stage2_dataset(Dataset):
     """
-    fold: "tr"   -> DAIC-train + EATD-train (混合)
+    fold: "tr"   -> DAIC-train (+ EATD-train, unless --no_eatd)
           "daic" -> DAIC-val (官方 dev, 純 DAIC)
           "eatd" -> EATD-val
     """
@@ -177,7 +183,11 @@ class stage2_dataset(Dataset):
             atei_l = PseudoMap.get(jid, -1)
             self.ds.append((jid, atei_l, depMap[pid], a_path, t_path))
 
-        # EATD train (t_*)
+        # EATD train (t_*) — 跳過如果 --no_eatd
+        if ARGS.no_eatd:
+            print("[Dataset] --no_eatd: 純 DAIC-train，不載入 EATD train 資料")
+            return
+
         eatd_npz  = FEAT_DIR / f"PseudoLabel_eatd_train_zdist_{q_tag}.npz"
         eatd_map  = _load_pseudo_map(eatd_npz)   # key: "t_1", "t_2", ...
         for vol_dir in sorted(EATD_DIR.iterdir(),
@@ -311,7 +321,7 @@ class whole_model(nn.Module):
                     dim_feedforward=4*embd_size,
                     nhead=nheads, batch_first=True, norm_first=True),
                 num_layers=TRANSFORMER_ENC_LAYERS, enable_nested_tensor=False)
-        elif self.encoder_type == "hope_attention":
+        elif self.encoder_type == "hope":
             from hope_adapter import HopeEncoderBlock
             self.a_encoder = nn.ModuleList([
                 HopeEncoderBlock(
@@ -353,7 +363,7 @@ class whole_model(nn.Module):
         if self.encoder_type == "attn":
             HA = self.a_transformer_enc(XA_proj, src_key_padding_mask=aMask)
             HT = self.t_transformer_enc(XT_proj, src_key_padding_mask=tMask)
-        elif self.encoder_type == "hope_attention":
+        elif self.encoder_type == "hope":
             if aMask is not None:
                 XA_proj = XA_proj.masked_fill(aMask.unsqueeze(-1), 0.0)
             HA = XA_proj

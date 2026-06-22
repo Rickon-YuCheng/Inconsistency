@@ -1,5 +1,7 @@
 """
- uv run src/Inconsistency/models/Stage2_seg_bin_daic_eatd.py --d_model 256 --enc_layers 1 --lr 1e-4 --weight_decay 1e-4 --dropout 0.3 --atei_dropout 0.3 --lambda_atei 0.7 --alpha_init 0.5 --batch_size 64 --epochs 30 --kfold 3 --use_class_weight --eatd_loss_scale 0.5
+uv run src/Inconsistency/models/Stage2_seg_bin_daic_eatd.py --d_model 256 --enc_layers 1 --lr 1e-4 --weight_decay 1e-4 --dropout 0.3 --atei_dropout 0.3 --lambda_atei 0.7 --alpha_init 0.5 --batch_size 64 --epochs 30 --kfold 3 --use_class_weight --eatd_loss_scale 0.5 --encoder_type attn
+
+uv run src/Inconsistency/models/Stage2_seg_bin_daic_eatd.py --d_model 256 --enc_layers 1 --lr 1e-4 --weight_decay 1e-4 --dropout 0.3 --atei_dropout 0.3 --lambda_atei 0.7 --alpha_init 0.5 --batch_size 64 --epochs 30 --kfold 3 --use_class_weight --eatd_loss_scale 0.5 --encoder_type hope
 """
 """
 Stage2_seg_bin_daic_eatd.py — paper-aligned segment-level depression detection
@@ -9,6 +11,11 @@ Mix
 ---
   Stage2_seg_bin.py    -> segment-level dataloader, train/val, patient majority
   Stage2_daic_eatd.py  -> DAIC+EATD joint split, EATD loss scaling
+
+主要改動（相對於舊版）：
+  新增 --encoder_type {attn, hope}
+    attn : 原本的 nn.TransformerEncoder（標準做法）
+    hope : HopeEncoderBlock (HOPE attention variant)，逐層手動 forward
 
 ATEI ckpt
 ---------
@@ -45,6 +52,7 @@ import wandb
 
 from Inconsistency.datasets.Incon_seg_bin import get_stage1_kfold
 from Inconsistency.models.Stage1_seg_bin_daic_eatd import atei as Stage1ATEI
+from Inconsistency.models.hope_adapter import HopeEncoderBlock
 from Inconsistency.utils import Timer, numpy_random_init, set_seed
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -125,35 +133,60 @@ def parse_args():
     p.add_argument("--print_norm", action="store_true")
     p.add_argument("--min_save_f1", type=float, default=MIN_SAVE_F1)
     p.add_argument("--max_audio_frames", type=int, default=500)
+    # ── 新增: encoder 選擇 ──
+    p.add_argument("--encoder_type", type=str, default="hope",
+                   choices=["attn", "hope"],
+                   help="attn=標準 TransformerEncoder, hope=HopeEncoderBlock")
+    p.add_argument("--cms_periods", type=int, nargs="+", default=[1, 4],
+                   help="HOPE 的 cms_periods，僅 encoder_type=hope 時有效")
     return p.parse_args()
 
 
 # ============================================================
-# Model (跟 Stage2_seg_bin.py 結構一致, ATEI 從 Stage1_seg_bin_daic_eatd 載)
+# Model (支援 attn / hope 兩種 encoder)
 # ============================================================
 class whole_model(nn.Module):
     def __init__(self, embd_size, nheads, atei_ckpt_path,
                  atei_dropout=0.3, dropout=0.3, enc_layers=1,
                  alpha_init=0.5, inp_dim=1024, freeze_atei=False,
-                 print_norm=False):
+                 print_norm=False, encoder_type="attn", cms_periods=(1, 4)):
         super().__init__()
         self.print_norm = print_norm
+        self.encoder_type = encoder_type
 
         # depression-side encoders
         self.a_in_proj = nn.Sequential(nn.Linear(inp_dim, embd_size),
                                        nn.LayerNorm(embd_size))
         self.t_in_proj = nn.Sequential(nn.Linear(inp_dim, embd_size),
                                        nn.LayerNorm(embd_size))
-        a_enc = nn.TransformerEncoderLayer(
-            d_model=embd_size, nhead=nheads, batch_first=True,
-            dim_feedforward=4 * embd_size, dropout=dropout, norm_first=True)
-        t_enc = nn.TransformerEncoderLayer(
-            d_model=embd_size, nhead=nheads, batch_first=True,
-            dim_feedforward=4 * embd_size, dropout=dropout, norm_first=True)
-        self.a_transformer_enc = nn.TransformerEncoder(
-            a_enc, num_layers=enc_layers, enable_nested_tensor=False)
-        self.t_transformer_enc = nn.TransformerEncoder(
-            t_enc, num_layers=enc_layers, enable_nested_tensor=False)
+
+        if encoder_type == "attn":
+            a_enc = nn.TransformerEncoderLayer(
+                d_model=embd_size, nhead=nheads, batch_first=True,
+                dim_feedforward=4 * embd_size, dropout=dropout, norm_first=True)
+            t_enc = nn.TransformerEncoderLayer(
+                d_model=embd_size, nhead=nheads, batch_first=True,
+                dim_feedforward=4 * embd_size, dropout=dropout, norm_first=True)
+            self.a_transformer_enc = nn.TransformerEncoder(
+                a_enc, num_layers=enc_layers, enable_nested_tensor=False)
+            self.t_transformer_enc = nn.TransformerEncoder(
+                t_enc, num_layers=enc_layers, enable_nested_tensor=False)
+        else:  # hope
+            self.a_transformer_enc = nn.ModuleList([
+                HopeEncoderBlock(
+                    dim=embd_size, heads=nheads, variant="hope_attention",
+                    cms_periods=tuple(cms_periods), hidden_multiplier=4,
+                    cms_online_updates=False,
+                ) for _ in range(enc_layers)
+            ])
+            self.t_transformer_enc = nn.ModuleList([
+                HopeEncoderBlock(
+                    dim=embd_size, heads=nheads, variant="hope_attention",
+                    cms_periods=tuple(cms_periods), hidden_multiplier=4,
+                    cms_online_updates=False,
+                ) for _ in range(enc_layers)
+            ])
+
         self.a_post_norm = nn.LayerNorm(embd_size)
         self.t_post_norm = nn.LayerNorm(embd_size)
 
@@ -177,7 +210,6 @@ class whole_model(nn.Module):
             print("[ATEI] frozen")
 
         self.atei_proj = nn.Linear(atei_d_model, embd_size)
-        # self.alpha = nn.Parameter(torch.tensor(float(alpha_init)))
         self.register_buffer('alpha', torch.tensor(float(alpha_init)))
 
         # fusion + heads
@@ -190,11 +222,24 @@ class whole_model(nn.Module):
         self.aux_t_head = nn.Linear(embd_size, N_CLASSES)
         self.aux_e_head = nn.Linear(embd_size, N_CLASSES)
 
+    def _encode(self, x, encoder, mask=None):
+        """統一 attn / hope 的 forward 介面"""
+        if self.encoder_type == "attn":
+            return encoder(x, src_key_padding_mask=mask)
+        else:  # hope: ModuleList, 逐層 forward, 手動處理 mask
+            if mask is not None:
+                x = x.masked_fill(mask.unsqueeze(-1), 0.0)
+            for layer in encoder:
+                x = layer(x)
+            if mask is not None:
+                x = x.masked_fill(mask.unsqueeze(-1), 0.0)
+            return x
+
     def forward(self, xa, xt, aMask=None, tMask=None, alpha_gate=1.0):
         XA = self.a_in_proj(xa)
         XT = self.t_in_proj(xt)
-        HA = self.a_transformer_enc(XA, src_key_padding_mask=aMask)
-        HT = self.t_transformer_enc(XT, src_key_padding_mask=tMask)
+        HA = self._encode(XA, self.a_transformer_enc, aMask)
+        HT = self._encode(XT, self.t_transformer_enc, tMask)
         eA = self._mask_mean(HA, aMask)
         eT = self._mask_mean(HT, tMask)
 
@@ -235,7 +280,6 @@ class whole_model(nn.Module):
 # EATD dep label helper
 # ============================================================
 def get_eatd_depmap(eatd_dir: Path, cutoff: float = EATD_SDS_CUTOFF):
-    """Returns {vol_name: dep_label_int}"""
     depmap = {}
     for vol_dir in eatd_dir.iterdir():
         if not vol_dir.is_dir():
@@ -257,14 +301,6 @@ def get_eatd_depmap(eatd_dir: Path, cutoff: float = EATD_SDS_CUTOFF):
 # Sample Index (DAIC + EATD 統一, 帶 dep_label + atei_label + corpus)
 # ============================================================
 class Stage2SegIndex:
-    """
-    每個 sample = {
-        corpus: 'daic'/'eatd',
-        patient_id: int/str,
-        seg_id, list_idx,
-        dep_label, atei_label (-1 if missing)
-    }
-    """
     def __init__(self, daic_pids, eatd_vols, daic_depMap, eatd_depMap,
                  daic_npz, eatd_npz=None, feat_dir=FEAT_DIR,
                  daic_ds_root=DAIC_DS_ROOT):
@@ -315,13 +351,11 @@ class Stage2SegIndex:
                         for p, s, l in zip(epl["patientIdx"],
                                             epl["segIdx"], epl["label"])}
             vol_set = set(eatd_vols)
-            # 對每個 EATD vol 列舉 seg_id 0/1/2
             for vol in eatd_vols:
                 if vol not in vol_set or vol not in eatd_depMap:
                     continue
                 for seg_id in [0, 1, 2]:
                     key = (vol, seg_id)
-                    # 只收有 ATEI label 的 segment (跳過壞 wav)
                     if key not in atei_map:
                         continue
                     self.samples.append({
@@ -441,12 +475,16 @@ def build_class_weight(index, device):
 def train_one_epoch(model, loader, loss_dep_none, loss_atei, opt, scaler,
                     device, epoch, tot_epochs, cur_lambda, fold_id,
                     accum_steps=1, lambda_aux=0.1, alpha_gate=1.0,
-                    eatd_loss_scale=0.5):
+                    eatd_loss_scale=0.5, encoder_type="attn"):
     model.train()
     tot_dep = tot_atei = tot = 0.0
     correct_dep = n = 0
     correct_atei = valid_atei_n = 0
     seg_true, seg_pred = [], []
+
+    # HOPE block 在某些舊 GPU (sm75 等) 上不支援 bfloat16 flash-attention kernel，
+    # 強制關閉 autocast 避免 "No available kernel" crash
+    use_autocast = (device == "cuda") and (encoder_type != "hope")
 
     pbar = tqdm(loader, desc=f"Fold{fold_id} Train {epoch}/{tot_epochs}",
                 unit="batch", leave=False)
@@ -459,12 +497,11 @@ def train_one_epoch(model, loader, loss_dep_none, loss_atei, opt, scaler,
         dep = batch["dep"].to(device, non_blocking=True)
         atei_lab = batch["atei"].to(device, non_blocking=True)
 
-        # per-sample scale: EATD = eatd_loss_scale, DAIC = 1.0
         sample_scale = torch.tensor(
             [eatd_loss_scale if c == "eatd" else 1.0 for c in batch["corpus"]],
             dtype=torch.float, device=device)
 
-        with torch.autocast(device_type="cuda", enabled=(device == "cuda"),
+        with torch.autocast(device_type="cuda", enabled=use_autocast,
                             dtype=torch.bfloat16):
             atei_logits, dep_logits, (aux_a, aux_t, aux_e) = model(
                 xa, xt, aMask, tMask, alpha_gate=alpha_gate)
@@ -513,13 +550,15 @@ def train_one_epoch(model, loader, loss_dep_none, loss_atei, opt, scaler,
 
 
 @torch.inference_mode()
-def validate(model, loader, loss_dep, device, fold_id):
+def validate(model, loader, loss_dep, device, fold_id, encoder_type="attn"):
     """val 只用 DAIC, segment-level → patient majority (mean logit)."""
     model.eval()
     seg_true, seg_pred = [], []
     per_patient_scores = defaultdict(list)
     per_patient_true = {}
     tot_loss = n = 0
+
+    use_autocast = (device == "cuda") and (encoder_type != "hope")
 
     for batch in tqdm(loader, desc=f"Fold{fold_id} Val", unit="batch", leave=False):
         xa = batch["xa"].to(device, non_blocking=True)
@@ -529,7 +568,7 @@ def validate(model, loader, loss_dep, device, fold_id):
         dep = batch["dep"].to(device, non_blocking=True)
         pids = batch["patient_ids"]
 
-        with torch.autocast(device_type="cuda", enabled=(device == "cuda"),
+        with torch.autocast(device_type="cuda", enabled=use_autocast,
                             dtype=torch.bfloat16):
             _, dep_logits, _ = model(xa, xt, aMask, tMask)
             loss = loss_dep(dep_logits, dep)
@@ -618,7 +657,8 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
         atei_ckpt_path=ARGS.stage1_ckpt,
         atei_dropout=ARGS.atei_dropout, dropout=ARGS.dropout,
         enc_layers=ARGS.enc_layers, alpha_init=ARGS.alpha_init,
-        freeze_atei=ARGS.freeze_atei, print_norm=ARGS.print_norm).to(device)
+        freeze_atei=ARGS.freeze_atei, print_norm=ARGS.print_norm,
+        encoder_type=ARGS.encoder_type, cms_periods=ARGS.cms_periods).to(device)
 
     atei_params = list(model.atei.parameters())
     other_params = [p for n, p in model.named_parameters()
@@ -641,7 +681,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
     scaler = torch.GradScaler("cuda")
 
     run_name = (ARGS.wandb_name + f"_fold{fold_id}") if ARGS.wandb_name else (
-        f"stage2seg_de_seed{ARGS.seed}_lr{ARGS.lr:.0e}_"
+        f"stage2seg_de_{ARGS.encoder_type}_seed{ARGS.seed}_lr{ARGS.lr:.0e}_"
         f"la{ARGS.lambda_atei:.2f}_a{ARGS.alpha_init:.2f}_"
         f"d{ARGS.d_model}_fold{fold_id}_{run_id}")
     if ARGS.use_wandb:
@@ -659,6 +699,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
 
         print("=" * 80)
         print(f"[Fold {fold_id}] Epoch [{epoch}/{ARGS.epochs}]  "
+              f"encoder={ARGS.encoder_type}  "
               f"α={float(model.alpha.detach()):.4f} λ={cur_lambda:.4f} "
               f"gate={alpha_gate:.3f}")
 
@@ -666,8 +707,10 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
                               opt, scaler, device, epoch, ARGS.epochs,
                               cur_lambda, fold_id, accum_steps=ARGS.accum_steps,
                               lambda_aux=ARGS.lambda_aux, alpha_gate=alpha_gate,
-                              eatd_loss_scale=ARGS.eatd_loss_scale)
-        v = validate(model, val_loader, loss_dep, device, fold_id)
+                              eatd_loss_scale=ARGS.eatd_loss_scale,
+                              encoder_type=ARGS.encoder_type)
+        v = validate(model, val_loader, loss_dep, device, fold_id,
+                     encoder_type=ARGS.encoder_type)
 
         print(f"[Train] dep_loss={tr['dep_loss']:.4f} "
             f"atei_loss={tr['atei_loss']:.4f} tot={tr['tot_loss']:.4f} "
@@ -687,7 +730,7 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
         if v["pat_bin_f1"] > best_pat_bin:
             best_pat_bin = v["pat_bin_f1"]
             if best_pat_bin > ARGS.min_save_f1:
-                ckpt = (f"stage2seg_de_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
+                ckpt = (f"stage2seg_de_{ARGS.encoder_type}_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
                         f"best_patBinF1_{best_pat_bin:.4f}_ep{epoch:03d}_"
                         f"lr{ARGS.lr:.0e}_d{ARGS.d_model}.pt")
                 torch.save({
@@ -700,11 +743,10 @@ def run_one_fold(fold_id, daic_train_pids, daic_val_pids, eatd_train_vols,
                 print(f"[Save best-patBinF1] {best_pat_bin:.4f} -> {ckpt}")
             saved = True
 
-
         if v["pat_macro_f1"] > best_pat_macro:
             best_pat_macro = v["pat_macro_f1"]; no_improve = 0
             if best_pat_macro > ARGS.min_save_f1:
-                ckpt = (f"stage2seg_de_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
+                ckpt = (f"stage2seg_de_{ARGS.encoder_type}_{run_id}_seed{ARGS.seed}_fold{fold_id}_"
                         f"best_patMacroF1_{best_pat_macro:.4f}_ep{epoch:03d}_"
                         f"lr{ARGS.lr:.0e}_d{ARGS.d_model}.pt")
                 torch.save({
@@ -781,10 +823,12 @@ def main():
     if not ARGS.no_eatd:
         eatd_depMap = get_eatd_depmap(EATD_DIR)
         eatd_train_vols = get_eatd_train_vols(ARGS.eatd_pseudo)
-        # 限制只用有 dep label 的 t_* (新 npz 已含 v_*, val 不用)
         eatd_train_vols = [v for v in eatd_train_vols if v in eatd_depMap]
         cnt = Counter(eatd_depMap[v] for v in eatd_train_vols)
         print(f"[EATD] {len(eatd_train_vols)} train vols  dep dist: {dict(cnt)}")
+
+    print(f"[Encoder] type={ARGS.encoder_type}"
+          + (f" cms_periods={ARGS.cms_periods}" if ARGS.encoder_type == "hope" else ""))
 
     fold_results = []
     for f in folds:
@@ -795,7 +839,7 @@ def main():
               f"patMacroF1={r['pat_macro_f1']:.4f}")
 
     print("\n" + "="*60)
-    print("K-FOLD RESULT (Stage2 seg_bin daic+eatd)")
+    print(f"K-FOLD RESULT (Stage2 seg_bin daic+eatd, encoder={ARGS.encoder_type})")
     print("="*60)
     for i, r in enumerate(fold_results):
         print(f"Fold {i}: patBinF1={r['pat_bin_f1']:.4f}  "
